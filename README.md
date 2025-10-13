@@ -46,9 +46,7 @@ Complete operations tracker with 2-minute setup wizard, unified dashboard, and a
 | **DASHBOARD** | KPIs, action items, member alerts - one page |
 | **Lead Data** | Enter all leads (25 columns) |
 | **Members** | Auto-filtered active members |
-| **Settings** | Targets, dropdowns, date range |
-| **Marketing** | Ad spend + performance |
-| **Staff** | Team leaderboard |
+| **Settings & Budget** | Targets, dropdowns, marketing budgets |
 | **Help** | Quick guide |
 | **_Data** | Hidden - calculations |
 
@@ -138,7 +136,7 @@ Y Current Status (derived) [green bg]
 2. Check boxes: Appt Set → Show → Converted → Cancelled
 
 **Weekly:**
-1. Add Marketing spend
+1. Review marketing budgets in Settings & Budget (adjust if needed)
 2. Review Staff leaderboard
 
 ---
@@ -150,6 +148,8 @@ Y Current Status (derived) [green bg]
 - Trial End = Trial Start + 14 days
 - Current Status = Derived from checkboxes
 - All DASHBOARD metrics = Real-time
+- CAC & spend metrics pull directly from monthly budgets (no manual trigger)
+- `_Daily Spend` tab removed; data generated on the fly
 
 **Formula-Based:**
 - No "magic" auto-stamping

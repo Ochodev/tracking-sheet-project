@@ -4,13 +4,15 @@
  * ✅ COMPLETE FEATURE SET:
  * ✅ Lead ID column (A) for GHL integration
  * ✅ _UTM Tracking tab with auto-source mapping (hidden)
- * ✅ Monthly marketing spend (auto-generates daily rates)
+ * ✅ Monthly marketing spend (directly references budgets)
  * ✅ Date range dropdown (9 presets + custom range)
  * ✅ Protections on auto-calculated columns
  * ✅ Source Performance Analysis table on DASHBOARD (12 metrics per source)
  * ✅ Sample data generator for testing (50 realistic leads)
  * ✅ 7 analytics charts on DASHBOARD (interactive visuals)
  * ✅ _Chart Data helper tab (pre-aggregated chart data)
+ * ✅ Auto-fix for DASHBOARD formula errors (2025-10-08)
+ * ✅ Health check detects and prevents formula reference errors
  * 
  * TAB STRUCTURE (12 tabs):
  * 1. DASHBOARD - KPIs, actions, alerts, source analysis + 7 interactive charts
@@ -21,33 +23,60 @@
  * 6. Staff - Leaderboard
  * 7. Help - Instructions
  * 8. _UTM Tracking - Hidden, auto-source mapping
- * 9. _Daily Spend - Hidden, auto-generated from monthly
+ * 9. _Daily Spend - Removed (spend calculated on demand)
  * 10. _Chart Data - Hidden, chart data aggregation (7 sections)
  * 11. _Data - Hidden, active members calculation
+ * 
+ * CRITICAL FIX (2025-10-08):
+ * - Fixed createDashboardTab() to reference Settings B3-B9 (data) not B2 (header)
+ * - Added auto-fix on sheet open if Target column shows "Target" text
+ * - Added menu item: "Gym Ops → Fix DASHBOARD Formulas" for manual fix
+ * - Enhanced health check to detect this specific issue
+ * - Created named ranges (Target_Leads, etc.) for future stability
+ * - See FORMULA-AUDIT-REPORT.md for complete documentation
  */
+
+// Import constants safely
+var Sheets = typeof SHEET !== 'undefined' ? SHEET : {};
+var LeadCol = typeof LEAD_COL !== 'undefined' ? LEAD_COL : {};
+var DefaultLists = typeof DEFAULT_LISTS !== 'undefined' ? DEFAULT_LISTS : {
+  SOURCES: ['Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 'Member Referral', 'Walk-In'],
+  STAFF: ['Front Desk', 'Coach A', 'Coach B'],
+  MEMBERSHIP_TYPES: ['PT', 'Small Group', 'General', 'Class Pack'],
+  CANCEL_REASONS: ['Price', 'Moved', 'Injury', 'Service', 'Location', 'Other'],
+  STATUS_VALUES: ['Lead', 'Appt Set', 'Show', 'Trial', 'Member', 'Cancelled'],
+  LOCATION: 'Main Location',
+  SAMPLE_CAMPAIGNS: ['spring-promo', 'summer-sale', 'back-to-school', 'new-year', 'organic', '', 'portal', 'api', 'member-program'],
+  SAMPLE_FIRST_NAMES: ['John', 'Sarah', 'Mike', 'Emma', 'David', 'Lisa', 'Chris', 'Anna', 'James', 'Maria', 'Tom', 'Kate', 'Alex', 'Jen', 'Dan'],
+  SAMPLE_LAST_NAMES: ['Smith', 'Johnson', 'Brown', 'Davis', 'Wilson', 'Moore', 'Taylor', 'Anderson', 'Thomas', 'Jackson', 'White', 'Harris', 'Martin', 'Garcia', 'Lee'],
+  SAMPLE_UTM_SOURCES: ['google', 'facebook', 'direct', 'organic', 'instagram', 'referral', 'other', 'gohighlevel', 'third-party', 'member_referral', 'walkin'],
+  AVERAGE_MRR: 150
+};
 
 // ============================================================
 // MENU & INITIALIZATION
 // ============================================================
 
 function onOpen() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   SpreadsheetApp.getUi()
     .createMenu('Gym Ops')
     .addItem('🧙 Quick Start Wizard', 'quickStartWizard')
+    .addItem('🚀 Full Setup (Init + Wizard)', 'fullSetupWizard')
     .addSeparator()
     .addItem('➕ Quick Add Lead', 'quickAddLead')
     .addSeparator()
     .addItem('⚙️ Initialize Template', 'initializeTemplate')
     .addItem('🔄 Refresh Dashboards', 'refreshDashboards')
-    .addItem('📊 Generate Daily Spend', 'generateDailySpend')
     .addSeparator()
     .addItem('💾 Create Backup Now', 'createBackupSnapshot')
     .addItem('🔄 Restore from Backup', 'restoreFromBackup')
     .addSeparator()
     .addItem('📥 Export Lead Data to CSV', 'exportLeadDataToCSV')
-    .addItem('📊 Generate Daily Report', 'generateDailyReport')
     .addSeparator()
-    .addItem('🌙 Toggle Dark Mode (DASHBOARD)', 'toggleDarkMode')
+    .addItem('🔍 Run Health Check', 'runHealthCheck')
+    .addItem('🔧 Fix DASHBOARD Formulas', 'fixDashboardTargetFormulas')
+    .addItem('🧹 Cleanup Settings Dropdowns', 'cleanupSettingsDropdowns')
     .addSeparator()
     .addItem('🔍 Setup Member Filters', 'setupMemberFilters')
     .addSeparator()
@@ -55,6 +84,26 @@ function onOpen() {
     .addSeparator()
     .addItem('❓ View Help', 'showHelp')
     .addToUi();
+  try {
+    const settingsSheet = ss.getSheetByName('Settings & Budget');
+    if (settingsSheet) {
+      normalizeSettingsTargets(settingsSheet);
+      validateSettingsTargets(settingsSheet);
+    }
+    setupDataValidations(ss);
+    
+    // Auto-check and fix DASHBOARD target formulas if broken
+    const dashboard = ss.getSheetByName('DASHBOARD');
+    if (dashboard && typeof HealthCheck !== 'undefined' && HealthCheck.checkDashboardTargetFormulas) {
+      const issues = HealthCheck.checkDashboardTargetFormulas(dashboard);
+      if (issues.length > 0) {
+        Logger.log(`⚠️ DASHBOARD formula issues detected on open (${issues.length} issues) - auto-fixing...`);
+        fixDashboardTargetFormulasSilent();
+      }
+    }
+  } catch (error) {
+    Logger.log('onOpen setup failed: ' + error);
+  }
 }
 
 /**
@@ -64,108 +113,95 @@ function onOpen() {
 function onEdit(e) {
   if (!e) return;
   
-  const sheet = e.source.getActiveSheet();
-  const range = e.range;
-  const row = range.getRow();
-  const col = range.getColumn();
+  var sheet = e.source.getActiveSheet();
+  var range = e.range;
+  var row = range.getRow();
+  var col = range.getColumn();
   
-  // CRITICAL FIX #1: Detect date range changes and force recalculation
-  if (sheet.getName() === 'DASHBOARD' && range.getA1Notation() === 'B2') {
-    // User changed date range dropdown in DASHBOARD
+  if (sheet.getName() === Sheets.DASHBOARD && range.getA1Notation() === 'B2') {
     updateDateRange();
-    return; // Exit early, no other processing needed
+    return;
   }
   
-  if (sheet.getName() === 'Settings & Budget' && range.getA1Notation() === 'B27') {
-    // User manually changed date preset in Settings
+  if (sheet.getName() === Sheets.SETTINGS && range.getA1Notation() === 'B27') {
     updateDateRange();
-    return; // Exit early
+    return;
   }
   
-  // Only process Lead Data tab and rows 2+ for checkbox auto-fill
-  if (sheet.getName() !== 'Lead Data' || row < 2) return;
+  if (sheet.getName() !== Sheets.LEAD_DATA || row < 2) return;
   
-  const value = range.getValue();
+  var value = range.getValue();
   
-  // Column O (15): Trial Start checkbox → auto-fill Trial Start date (column O)
-  if (col === 15 && value === true) {
-    const trialStartCell = sheet.getRange(row, 15);
-    // If cell is empty or just checked, set to today
-    if (trialStartCell.getValue() === true || trialStartCell.getValue() === '') {
-      trialStartCell.setValue(new Date());
-      SpreadsheetApp.getActiveSpreadsheet().toast('✅ Trial start date set to today!', 'Auto-filled', 2);
-    }
+  if (col === LeadCol.APPT_SET) {
+    handleCheckboxDateAutomation(e, sheet, row, LeadCol.APPT_DATE, value, '✅ Appointment date set to today!', 'Appointment date cleared.');
+  }
+
+  if (col === LeadCol.SHOW) {
+    handleCheckboxDateAutomation(e, sheet, row, LeadCol.SHOW_DATE, value, '✅ Show date set to right now!', 'Show date cleared.');
+  }
+
+  if (col === LeadCol.TRIAL_START) {
+    handleCheckboxDateAutomation(e, sheet, row, LeadCol.TRIAL_START_DATE, value, '✅ Trial start date set to today!', 'Trial start date cleared.');
   }
   
-  // Column Q (17): Converted? checkbox → auto-fill Member Start date (column R)
-  if (col === 17 && value === true) {
-    const memberStartCell = sheet.getRange(row, 18);
-    // Only auto-fill if Member Start is empty
-    if (!memberStartCell.getValue()) {
-      memberStartCell.setValue(new Date());
-      SpreadsheetApp.getActiveSpreadsheet().toast('✅ Member start date set to today!', 'Auto-filled', 2);
-    }
+  if (col === LeadCol.CONVERTED) {
+    handleCheckboxDateAutomation(e, sheet, row, LeadCol.MEMBER_START, value, '✅ Member start date set to today!', 'Member start date cleared.');
   }
   
-  // Column V (22): Cancelled? checkbox → auto-fill Cancel Date (column W)
-  if (col === 22 && value === true) {
-    const cancelDateCell = sheet.getRange(row, 23);
-    // Only auto-fill if Cancel Date is empty
-    if (!cancelDateCell.getValue()) {
-      cancelDateCell.setValue(new Date());
-      SpreadsheetApp.getActiveSpreadsheet().toast('✅ Cancel date set to today!', 'Auto-filled', 2);
-    }
+  if (col === LeadCol.CANCELLED) {
+    handleCheckboxDateAutomation(e, sheet, row, LeadCol.CANCEL_DATE, value, '✅ Cancel date set to today!', 'Cancel date cleared.');
   }
   
-  // Column L (12): Appt Set? checkbox → auto-fill Appt Date (column M)
-  if (col === 12 && value === true) {
-    const apptDateCell = sheet.getRange(row, 13);
-    // Only auto-fill if Appt Date is empty
-    if (!apptDateCell.getValue()) {
-      apptDateCell.setValue(new Date());
-      SpreadsheetApp.getActiveSpreadsheet().toast('✅ Appointment date set to today!', 'Auto-filled', 2);
-    }
-  }
-  
-  // Column Y (25): Notes edited → auto-update Last Touchpoint (column AF/32)
-  if (col === 25) {
-    const lastTouchpointCell = sheet.getRange(row, 32);
-    // Update Last Touchpoint with current timestamp (frozen value, not volatile)
-    const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  if (col === LeadCol.NOTES) {
+    var lastTouchpointCell = sheet.getRange(row, LeadCol.LAST_TOUCHPOINT);
+    var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     lastTouchpointCell.setValue(timestamp);
-    // Silent update - no toast to avoid disrupting note-taking flow
   }
   
-  // HIGH FIX #6: Duplicate Detection for Phone (E/5) and Email (F/6)
-  if ((col === 5 || col === 6) && value && value.toString().trim() !== '') {
-    const duplicateInfo = checkForDuplicate(sheet, row, col, value);
+  if ((col === LeadCol.PHONE || col === LeadCol.EMAIL) && value && value.toString().trim() !== '') {
+    var duplicateInfo = LeadDataService.checkForDuplicate(sheet, row, col, value);
     if (duplicateInfo) {
-      const action = showDuplicateAlert(duplicateInfo, row, col);
+      var action = showDuplicateAlert(duplicateInfo, row, col);
       if (action === 'CANCEL') {
-        // Clear the cell
         range.setValue('');
-        SpreadsheetApp.getActiveSpreadsheet().toast('⚠️ Entry cancelled - duplicate detected', 'Cancelled', 3);
+        e.source.toast('⚠️ Entry cancelled - duplicate detected', 'Cancelled', 3);
       }
-      // If 'CONTINUE', do nothing (keep the value)
     }
   }
   
-  // HIGH FIX #8: Date Chronology Validation for date columns
   if (value instanceof Date || (value && !isNaN(Date.parse(value)))) {
-    const validationError = validateDateChronology(sheet, row, col);
+    var validationError = LeadDataService.validateDateChronology(sheet, row, col);
     if (validationError) {
-      const ui = SpreadsheetApp.getUi();
-      const title = validationError.warning ? '⚠️ Date Order Warning' : '❌ Invalid Date Order';
-      const message = validationError.message + '\n\nDo you want to keep this date anyway?';
-      
-      const response = ui.alert(title, message, ui.ButtonSet.YES_NO);
-      
+      var ui = SpreadsheetApp.getUi();
+      var title = validationError.warning ? '⚠️ Date Order Warning' : '❌ Invalid Date Order';
+      var message = validationError.message + '\n\nDo you want to keep this date anyway?';
+      var response = ui.alert(title, message, ui.ButtonSet.YES_NO);
       if (response === ui.Button.NO) {
-        // Clear the invalid date
         range.setValue('');
-        SpreadsheetApp.getActiveSpreadsheet().toast(`⚠️ ${validationError.field} cleared - invalid date order`, 'Date Validation', 3);
+        e.source.toast('⚠️ ' + validationError.field + ' cleared - invalid date order', 'Date Validation', 3);
       }
-      // If YES, keep the date (user override)
+    }
+  }
+}
+
+function handleCheckboxDateAutomation(e, sheet, row, dateColumn, checkboxValue, setToastMessage, clearToastMessage) {
+  const dateCell = sheet.getRange(row, dateColumn);
+
+  if (checkboxValue === true) {
+    dateCell.setValue(new Date());
+    if (setToastMessage) {
+      e.source.toast(setToastMessage, 'Auto-filled', 2);
+    }
+    return;
+  }
+
+  if (checkboxValue === false) {
+    const currentValue = dateCell.getValue();
+    if (currentValue !== '' && currentValue !== null) {
+      dateCell.clearContent();
+      if (clearToastMessage) {
+        e.source.toast(clearToastMessage, 'Auto-cleared', 2);
+      }
     }
   }
 }
@@ -201,7 +237,7 @@ function checkForDuplicate(sheet, currentRow, col, value) {
           email: leadRow[5] || '',
           createdDate: leadRow[1] || '',
           status: leadRow[25] || 'Unknown', // Column Z (Current Status)
-          duplicateField: col === 5 ? 'PHONE' : 'EMAIL'
+          duplicateField: col === LeadCol.PHONE ? 'PHONE' : 'EMAIL'
         };
       }
     }
@@ -479,19 +515,23 @@ function calculateDateRangeFromPreset(preset, customStart, customEnd) {
 /**
  * Quick Start Wizard - Updated for GHL integration
  */
-function quickStartWizard() {
+function quickStartWizard(options) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
+  const skipWelcome = options && options.skipWelcome === true;
+  const skipAutoInit = options && options.skipAutoInit === true;
   
   // Step 1: Welcome & Auto-Initialize
-  const welcome = ui.alert(
-    '👋 Welcome to Gym Ops Tracker v2.2!',
-    'This 5-minute wizard will fully configure your tracker.\n\nNo need to touch Settings & Budget afterward!\n\nClick OK to continue.',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (welcome !== ui.Button.OK) return;
-  
-  if (!ss.getSheetByName('DASHBOARD')) {
+  if (!skipWelcome) {
+    const welcome = ui.alert(
+      '👋 Welcome to Gym Ops Tracker v2.2!',
+      'This 5-minute wizard will fully configure your tracker.\n\nNo need to touch Settings & Budget afterward!\n\nClick OK to continue.',
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (welcome !== ui.Button.OK) return;
+  }
+
+  if (!skipAutoInit && !ss.getSheetByName('DASHBOARD')) {
     ui.alert('Setting up template...', 'This will take 20 seconds.', ui.ButtonSet.OK);
     initializeTemplate(true);
   }
@@ -513,6 +553,36 @@ function quickStartWizard() {
   );
   if (targetPrompt.getSelectedButton() !== ui.Button.OK) return;
   const targetMembers = parseInt(targetPrompt.getResponseText()) || 40;
+  
+  // Step 3a: Monthly Targets
+  const defaultTargets = {
+    leads: Math.ceil(targetMembers * 3.5),
+    setRate: 0.6,
+    showRate: 0.7,
+    closeRate: 0.5,
+    newMembers: targetMembers,
+    mrr: Math.ceil(targetMembers * (DefaultLists.AVERAGE_MRR || 150))
+  };
+  
+  const targetsPrompt = ui.prompt(
+    'Set Monthly Targets',
+    'Enter targets separated by commas (Leads, Set %, Show %, Close %, New Members, MRR)\n\n' +
+    `Defaults: ${defaultTargets.leads}, ${Math.round(defaultTargets.setRate * 100)}%, ${Math.round(defaultTargets.showRate * 100)}%, ${Math.round(defaultTargets.closeRate * 100)}%, ${defaultTargets.newMembers}, $${defaultTargets.mrr}` +
+    '\n\nExample: 120, 55%, 65%, 45%, 30, $6000\n\nPress OK to accept defaults.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (targetsPrompt.getSelectedButton() !== ui.Button.OK) return;
+  const targetsResponse = targetsPrompt.getResponseText().trim();
+  const parsedTargets = targetsResponse ? targetsResponse.split(',').map(value => value.trim()) : [];
+  
+  const targets = {
+    leads: parsedTargets[0] ? parseInt(parsedTargets[0]) : defaultTargets.leads,
+    setRate: parsedTargets[1] ? parseFloat(parsedTargets[1].replace('%', '')) / 100 : defaultTargets.setRate,
+    showRate: parsedTargets[2] ? parseFloat(parsedTargets[2].replace('%', '')) / 100 : defaultTargets.showRate,
+    closeRate: parsedTargets[3] ? parseFloat(parsedTargets[3].replace('%', '')) / 100 : defaultTargets.closeRate,
+    newMembers: parsedTargets[4] ? parseInt(parsedTargets[4]) : defaultTargets.newMembers,
+    mrr: parsedTargets[5] ? parseFloat(parsedTargets[5].replace('$', '').replace(',', '')) : defaultTargets.mrr
+  };
   
   // Step 4: Marketing Budget (User-Controlled Approach)
   const budgetPrompt = ui.prompt(
@@ -635,7 +705,7 @@ function quickStartWizard() {
   );
   if (staffPrompt.getSelectedButton() !== ui.Button.OK) return;
   const staffInput = staffPrompt.getResponseText().trim();
-  const staffNames = staffInput ? staffInput.split(',').map(s => s.trim()).filter(s => s) : ['Front Desk', 'Coach A', 'Coach B'];
+  const staffNames = staffInput ? staffInput.split(',').map(s => s.trim()).filter(s => s) : DefaultLists.STAFF.slice();
   
   // Step 6: Membership Types
   const typesConfirm = ui.alert(
@@ -644,7 +714,7 @@ function quickStartWizard() {
     ui.ButtonSet.YES_NO
   );
   
-  let membershipTypes = ['PT', 'Small Group', 'General', 'Class Pack'];
+  let membershipTypes = DefaultLists.MEMBERSHIP_TYPES.slice();
   if (typesConfirm === ui.Button.NO) {
     const typesPrompt = ui.prompt(
       'Custom Membership Types',
@@ -669,9 +739,13 @@ function quickStartWizard() {
     
     const settingsSheet = ss.getSheetByName('Settings & Budget');
     if (settingsSheet) {
-      // Set targets
-      settingsSheet.getRange('B6').setValue(targetMembers); // New Members
-      settingsSheet.getRange('B2').setValue(Math.ceil(targetMembers * 3.5)); // Leads
+      // Set monthly targets based on wizard inputs
+      settingsSheet.getRange('B3').setValue(targets.leads);
+      settingsSheet.getRange('B4').setValue(targets.setRate);
+      settingsSheet.getRange('B5').setValue(targets.showRate);
+      settingsSheet.getRange('B6').setValue(targets.closeRate);
+      settingsSheet.getRange('B7').setValue(targets.newMembers);
+      settingsSheet.getRange('B8').setValue(targets.mrr);
       
       // Set location to gym name
       settingsSheet.getRange('C14').setValue(gymName);
@@ -688,32 +762,53 @@ function quickStartWizard() {
       
       // Set marketing budget (if approved and allocations exist)
       if (budgetApproved && budgetAllocations.length > 0) {
-        const currentMonth = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM');
+        const today = new Date();
+        const startYear = today.getFullYear();
+        const startMonth = today.getMonth(); // 0-based
         
-        // Write each allocation to Settings & Budget starting at row 40
-        budgetAllocations.forEach((allocation, index) => {
-          const row = 40 + index;
-          settingsSheet.getRange(`A${row}`).setValue(currentMonth);
-          settingsSheet.getRange(`B${row}`).setValue(allocation.source);
-          settingsSheet.getRange(`C${row}`).setValue(allocation.amount);
-          // Use TEXT() to ensure month value works as text, whether stored as text or date
-          settingsSheet.getRange(`D${row}`).setFormula(`=IFERROR(IF(A${row}="","",DAY(EOMONTH(DATEVALUE(TEXT(A${row},"@")&"-01"),0))), "")`);
-          settingsSheet.getRange(`E${row}`).setFormula(`=IFERROR(IF(C${row}="","",C${row}/D${row}), "")`);
-        });
+        // Clear existing budget rows (40-200) before writing (24 months × sources)
+        settingsSheet.getRange('A40:E200').clearContent();
         
-        // Force calculation by flushing
+        let rowOffset = 0;
+        // Create 24 months: 12 months past + 12 months future
+        for (let monthOffset = -12; monthOffset < 12; monthOffset++) {
+          const date = new Date(startYear, startMonth + monthOffset, 1);
+          const year = date.getFullYear();
+          const month = (date.getMonth() + 1).toString().padStart(2, '0');
+          const monthKey = `${year}-${month}`;
+          const daysInMonth = new Date(year, date.getMonth() + 1, 0).getDate();
+          
+          budgetAllocations.forEach((allocation, index) => {
+            const row = 40 + rowOffset;
+            settingsSheet.getRange(`A${row}`).setNumberFormat('@');
+            settingsSheet.getRange(`A${row}`).setValue(monthKey);
+            settingsSheet.getRange(`B${row}`).setValue(allocation.source);
+            settingsSheet.getRange(`C${row}`).setValue(allocation.amount);
+            settingsSheet.getRange(`D${row}`).setValue(daysInMonth);
+            settingsSheet.getRange(`E${row}`).setFormula(`=IFERROR(IF(C${row}="","",C${row}/D${row}),"")`);
+            rowOffset++;
+          });
+        }
+        
         SpreadsheetApp.flush();
-        
-        // Auto-generate daily spend
-        Utilities.sleep(2000); // Wait for formulas to calculate
-        generateDailySpend();
       }
     }
     
     // Add sample data if requested
-    if (sampleData === ui.Button.YES) {
-      addSampleData();
+  if (sampleData === ui.Button.YES) {
+    const added = addSampleData();
+    if (!added) {
+      ui.alert('Heads up', 'Sample data was not added. You can run "Gym Ops → 🧪 Add Sample Data" later.', ui.ButtonSet.OK);
     }
+  }
+
+  if (typeof OnboardingService !== 'undefined' && OnboardingService && typeof OnboardingService.runOnboardingSetup === 'function') {
+    try {
+      OnboardingService.runOnboardingSetup();
+    } catch (onboardingError) {
+      Logger.log('Onboarding setup error: ' + onboardingError);
+    }
+  }
     
     // Finalize
     const dashboard = ss.getSheetByName('DASHBOARD');
@@ -756,12 +851,10 @@ function initializeTemplate(silent) {
   }
   
   try {
-    createHelpTab(ss);
+    createHelpTab(ss, false);
     createSettingsTab(ss);
     createLeadDataTab(ss);
     createMembersTab(ss);
-    createStaffViewTab(ss);
-    createSalesViewTab(ss);
     createImportMembersTab(ss);
     createLTVAnalysisTab(ss);
     createMarketingTab(ss);
@@ -793,6 +886,28 @@ function initializeTemplate(silent) {
     ui.alert('Error', error.toString(), ui.ButtonSet.OK);
     Logger.log('Error: ' + error.toString());
   }
+}
+
+function fullSetupWizard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  const confirm = ui.alert(
+    '🚀 Run Full Setup?',
+    'This will re-create the template structure and walk you through the Quick Start Wizard.\n\nExisting customizations may be overwritten. Continue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (confirm !== ui.Button.YES) {
+    return;
+  }
+
+  initializeTemplate(true);
+
+  quickStartWizard({
+    skipWelcome: true,
+    skipAutoInit: true
+  });
 }
 
 // ============================================================
@@ -836,20 +951,20 @@ function createDashboardTab(ss) {
   
   // Row 5: Key instant metrics
   sheet.getRange('A5').setValue('🔥 HOT Leads:').setFontWeight('bold');
-  sheet.getRange('B5').setFormula('=COUNTIFS(\'Lead Data\'!AB:AB,"🔥 HOT",\'Lead Data\'!Q:Q,FALSE,\'Lead Data\'!V:V,FALSE)').setNumberFormat('0');
+  sheet.getRange('B5').setFormula('=COUNTIFS(\'Lead Data\'!AD:AD,"🔥 HOT",\'Lead Data\'!S:S,FALSE,\'Lead Data\'!X:X,FALSE)').setNumberFormat('0');
   sheet.getRange('A5').setNote('HOT leads (score 70+) who are NOT yet members.\n\nThese are your highest-priority leads - follow up ASAP!');
   
   sheet.getRange('C5').setValue('⚠️ Action Needed:').setFontWeight('bold');
-  sheet.getRange('D5').setFormula('=COUNTA(A20:A23)+COUNTA(A25:A28)+COUNTA(A30:A33)+COUNTA(A40:A43)+COUNTA(A45:A48)').setNumberFormat('0');
+  sheet.getRange('D5').setFormula('=LET(values,{A20,A25,A30,A45,A50},SUM(BYROW(values,LAMBDA(v,IF(OR(v="✓ None",v=""),0,COUNTA(TEXTSPLIT(v,CHAR(10))))))))').setNumberFormat('0');
   sheet.getRange('C5').setNote('Total action items from sections below:\n• No Appt Set (24h)\n• No Shows\n• Trials Expiring (3d)\n• Member Alerts');
   
   sheet.getRange('E5').setValue('⏰ Trials Expiring (3d):').setFontWeight('bold');
-  sheet.getRange('F5').setFormula('=COUNTIFS(\'Lead Data\'!P:P,">="&TODAY(),\'Lead Data\'!P:P,"<="&TODAY()+3,\'Lead Data\'!Q:Q,FALSE,\'Lead Data\'!O:O,"<>")').setNumberFormat('0');
+  sheet.getRange('F5').setFormula('=COUNTIFS(\'Lead Data\'!R:R,">="&TODAY(),\'Lead Data\'!R:R,"<="&TODAY()+3,\'Lead Data\'!S:S,FALSE,\'Lead Data\'!Q:Q,"<>")').setNumberFormat('0');
   sheet.getRange('E5').setNote('Trials expiring within 3 days who haven\'t converted yet.\n\nUrgent: Follow up to close these sales!');
   
   // Row 6: More metrics
   sheet.getRange('A6').setValue('💰 Active MRR:').setFontWeight('bold');
-  sheet.getRange('B6').setFormula('=SUMIFS(\'Lead Data\'!T:T,\'Lead Data\'!Q:Q,TRUE,\'Lead Data\'!V:V,FALSE)').setNumberFormat('$#,##0');
+  sheet.getRange('B6').setFormula('=SUMIFS(\'Lead Data\'!V:V,\'Lead Data\'!S:S,TRUE,\'Lead Data\'!X:X,FALSE)').setNumberFormat('$#,##0');
   sheet.getRange('A6').setNote('Total Monthly Recurring Revenue from all active members (not cancelled).');
   
   sheet.getRange('C6').setValue('📈 LTV:CAC Health:').setFontWeight('bold');
@@ -857,7 +972,7 @@ function createDashboardTab(ss) {
   sheet.getRange('C6').setNote('Overall profitability health based on LTV:CAC ratio.\n\n✅ Excellent = 5x+\n✅ Good = 3-5x\n⚠️ Review = <3x');
   
   sheet.getRange('E6').setValue('🆕 New Members (30d):').setFontWeight('bold');
-  sheet.getRange('F6').setFormula('=COUNTIFS(\'Lead Data\'!R:R,">="&TODAY()-30,\'Lead Data\'!R:R,"<="&TODAY(),\'Lead Data\'!Q:Q,TRUE)').setNumberFormat('0');
+  sheet.getRange('F6').setFormula('=COUNTIFS(\'Lead Data\'!T:T,">="&TODAY()-30,\'Lead Data\'!T:T,"<="&TODAY(),\'Lead Data\'!S:S,TRUE)').setNumberFormat('0');
   sheet.getRange('E6').setNote('New members who joined in the last 30 days.');
   
   // Conditional formatting for the snapshot card
@@ -875,38 +990,85 @@ function createDashboardTab(ss) {
   
   // KPIs (now starting at row 8, with headers at row 9)
   sheet.getRange('A8').setValue('🎯 KEY METRICS').setFontSize(14).setFontWeight('bold');
-  const kpiHeaders = [['Metric', 'Actual', 'Target', 'Goal To Date', 'Variance', 'Status']];
-  sheet.getRange('A9:F9').setValues(kpiHeaders).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
+  const kpiHeaders = [['Metric', 'Actual', 'Target', 'Variance', 'Status']];
+  sheet.getRange('A9:E9').setValues(kpiHeaders).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
   const metrics = ['Leads', 'Set %', 'Show %', 'Close %', 'New Members', 'MRR', 'CAC'];
   sheet.getRange(10, 1, metrics.length, 1).setValues(metrics.map(m => [m]));
   
-  const pace = '(MAX(0,MIN(\'Settings & Budget\'!B31,TODAY())-\'Settings & Budget\'!B30+1))/(MAX(1,\'Settings & Budget\'!B31-\'Settings & Budget\'!B30+1))';
-  
   // Formulas - updated for new row positions (starting at row 10 instead of 7) and fixed sheet references
   sheet.getRange('B10').setFormula('=COUNTIFS(\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)');
-  sheet.getRange('B11').setFormula('=IFERROR(COUNTIFS(\'Lead Data\'!L:L,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/B10,0)');
-  sheet.getRange('B12').setFormula('=IFERROR(COUNTIFS(\'Lead Data\'!N:N,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/COUNTIFS(\'Lead Data\'!L:L,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31),0)');
-  sheet.getRange('B13').setFormula('=IFERROR(COUNTIFS(\'Lead Data\'!Q:Q,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/COUNTIFS(\'Lead Data\'!N:N,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31),0)'); // ✅ FIXED: Cohort-based (both by created date)
-  sheet.getRange('B14').setFormula('=COUNTIFS(\'Lead Data\'!R:R,">="&\'Settings & Budget\'!B30,\'Lead Data\'!R:R,"<="&\'Settings & Budget\'!B31,\'Lead Data\'!Q:Q,TRUE)');
-  sheet.getRange('B15').setFormula('=SUMIFS(\'Lead Data\'!T:T,\'Lead Data\'!Q:Q,TRUE,\'Lead Data\'!V:V,FALSE)'); // ✅ FIXED: Total Active MRR (all active members)
+  // HIGH FIX #8: Enhanced rate formulas - show "N/A" instead of 0% when denominator is 0
+  sheet.getRange('B11').setFormula('=IF(B10=0,"-",IFERROR(COUNTIFS(\'Lead Data\'!L:L,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/B10,0))');
+  sheet.getRange('B12').setFormula('=LET(appts,COUNTIFS(\'Lead Data\'!L:L,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31),IF(appts=0,"-",IFERROR(COUNTIFS(\'Lead Data\'!N:N,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/appts,0)))');
+  sheet.getRange('B13').setFormula('=LET(shows,COUNTIFS(\'Lead Data\'!N:N,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31),IF(shows=0,"-",IFERROR(COUNTIFS(\'Lead Data\'!S:S,TRUE,\'Lead Data\'!B:B,">="&\'Settings & Budget\'!B30,\'Lead Data\'!B:B,"<="&\'Settings & Budget\'!B31)/shows,0)))');
+  sheet.getRange('B14').setFormula('=COUNTIFS(\'Lead Data\'!T:T,">="&\'Settings & Budget\'!B30,\'Lead Data\'!T:T,"<="&\'Settings & Budget\'!B31,\'Lead Data\'!S:S,TRUE,\'Lead Data\'!X:X,FALSE)');
+  sheet.getRange('B15').setFormula('=SUMIFS(\'Lead Data\'!V:V,\'Lead Data\'!S:S,TRUE,\'Lead Data\'!X:X,FALSE)');
   // CRITICAL FIX #3: Enhanced CAC formula - handles zero members gracefully
-  sheet.getRange('B16').setFormula('=IF(B14=0,IF(SUMIFS(\'_Daily Spend\'!C:C,\'_Daily Spend\'!A:A,">="&\'Settings & Budget\'!B30,\'_Daily Spend\'!A:A,"<="&\'Settings & Budget\'!B31)>0,"⚠️ Spend/0","-"),SUMIFS(\'_Daily Spend\'!C:C,\'_Daily Spend\'!A:A,">="&\'Settings & Budget\'!B30,\'_Daily Spend\'!A:A,"<="&\'Settings & Budget\'!B31)/B14)');
+  sheet.getRange('B16').setFormula(`=LET(
+    startDate,'Settings & Budget'!$B$30,
+    endDate,'Settings & Budget'!$B$31,
+    rawMonths,'Settings & Budget'!$A$40:$A$100,
+    rates,'Settings & Budget'!$E$40:$E$100,
+    monthStarts,ARRAYFORMULA(IF(rawMonths="",,IF(ISNUMBER(rawMonths),DATE(YEAR(rawMonths),MONTH(rawMonths),1),DATE(VALUE(LEFT(rawMonths,4)),VALUE(MID(rawMonths,6,2)),1)))),
+    monthEnds,ARRAYFORMULA(IF(monthStarts="",,EOMONTH(monthStarts,0))),
+    totalSpend,IFERROR(SUM(BYROW(FILTER({monthStarts,monthEnds,rates},(rates<>"")*(monthStarts<>"")*(monthEnds>=startDate)*(monthStarts<=endDate)),
+      LAMBDA(row,
+        LET(
+          mStart,INDEX(row,1),
+          mEnd,INDEX(row,2),
+          rate,INDEX(row,3),
+          overlapStart,MAX(mStart,startDate),
+          overlapEnd,MIN(mEnd,endDate),
+          days,MAX(0,overlapEnd-overlapStart+1),
+          days*rate
+        )
+      )
+    )),0),
+    IF(B14=0,IF(totalSpend>0,"⚠️ Spend/0","-"),totalSpend/B14)
+  )`);
   
-  // Targets - Fixed to reference 'Settings & Budget' tab
-  for (let i = 2; i <= 7; i++) {
-    sheet.getRange(8 + i, 3).setFormula(`=IFERROR('Settings & Budget'!B${i},"⚠️ Setup")`);
-  }
-  sheet.getRange('C15').setFormula('=IFERROR(C14*\'Settings & Budget\'!B9,"⚠️ Setup")');
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // CRITICAL FIX: Target Column Formulas (Fixed 2025-10-08)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 
+  // ISSUE: Previous loop created C10 with reference to B2 (header "Target")
+  // CAUSE: Loop started at i=2 (header row) instead of i=3 (first data row)
+  // EFFECT: C10-C16 showed "Target" text → #VALUE! cascade in D, E columns
+  // NOTE: "Goal To Date" column removed - Variance now calculates Actual - Target directly
+  // 
+  // SOLUTION: Explicit assignments ensure each metric references correct data row
+  // - C10 → B3 (Leads: 70)
+  // - C11 → B4 (Set Rate: 60%)
+  // - C12 → B5 (Show Rate: 70%)
+  // - C13 → B6 (Close Rate: 50%)
+  // - C14 → B7 (New Members: 20)
+  // - C15 → B8 (MRR: $3,000)
+  // - C16 → B9 (CAC: $150)
+  // 
+  // AUTO-FIX: onOpen() now validates and auto-corrects this issue
+  // MANUAL FIX: Users can run "Gym Ops → Fix DASHBOARD Formulas"
+  // PREVENTION: Named ranges (Target_Leads, etc.) created for future stability
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   
-  // Goal To Date, Variance, Status (updated for new row positions: 10-16)
+  sheet.getRange('C10').setFormula('=IFERROR(\'Settings & Budget\'!B3,"⚠️ Setup")'); // Leads Target
+  sheet.getRange('C11').setFormula('=IFERROR(\'Settings & Budget\'!B4,"⚠️ Setup")'); // Set Rate Target
+  sheet.getRange('C12').setFormula('=IFERROR(\'Settings & Budget\'!B5,"⚠️ Setup")'); // Show Rate Target
+  sheet.getRange('C13').setFormula('=IFERROR(\'Settings & Budget\'!B6,"⚠️ Setup")'); // Close Rate Target
+  sheet.getRange('C14').setFormula('=IFERROR(\'Settings & Budget\'!B7,"⚠️ Setup")'); // New Members Target
+  sheet.getRange('C15').setFormula('=IFERROR(\'Settings & Budget\'!B8,"⚠️ Setup")'); // MRR Target
+  sheet.getRange('C16').setFormula('=IFERROR(\'Settings & Budget\'!B9,"⚠️ Setup")'); // CAC Target
+  
+  // Variance and Status (updated for new row positions: 10-16)
+  // Variance = Actual - Target (column D = B - C)
   for (let row = 10; row <= 16; row++) {
-    sheet.getRange(row, 4).setFormula(`=IF(C${row}="","",C${row}*${pace})`);
-    sheet.getRange(row, 5).setFormula(`=IF(D${row}="","",B${row}-D${row})`);
+    sheet.getRange(row, 4).setFormula(`=IF(C${row}="","",B${row}-C${row})`);
+    // Status: For most metrics, higher is better (Actual > Target = ON PACE)
+    // For CAC (row 16), lower is better (Actual < Target = ON PACE)
     if (row === 16) {
-      sheet.getRange(row, 6).setFormula(`=IF(D${row}="","",IF(B${row}<=D${row},"ON PACE","BEHIND"))`);
+      sheet.getRange(row, 5).setFormula(`=IF(C${row}="","",IF(B${row}<=C${row},"✅ ON PACE","⚠️ OVER"))`);
     } else {
-      sheet.getRange(row, 6).setFormula(`=IF(D${row}="","",IF(B${row}>=D${row},"ON PACE","BEHIND"))`);
+      sheet.getRange(row, 5).setFormula(`=IF(C${row}="","",IF(B${row}>=C${row},"✅ ON PACE","📉 BEHIND"))`);
     }
   }
   
@@ -920,20 +1082,26 @@ function createDashboardTab(ss) {
   sheet.getRange('A16').setNote('💸 CAC - Customer Acquisition Cost\n\nFormula: Total Marketing Spend ÷ New Members\n\n✅ Excellent: <$100\n✅ Good: $100-200\n⚠️ Warning: $200-300\n❌ High: >$300\n\nLower is better! Compare to LTV:CAC ratio (target: 3x+).');
   
   // Format (updated for new row positions: 11-13 for %, 15-16 for $)
-  sheet.getRange('B11:F13').setNumberFormat('0.0%');
-  sheet.getRange('B15:F15').setNumberFormat('$#,##0');
-  sheet.getRange('B16:F16').setNumberFormat('$#,##0');
+  // Updated for Goal To Date removal: columns are now A, B, C, D, E (was A, B, C, D, E, F)
+  sheet.getRange('B11:E13').setNumberFormat('0.0%');
+  sheet.getRange('C11:C13').setNumberFormat('0.0%');
+  sheet.getRange('D11:D13').setNumberFormat('0.0%'); // Variance for percentage rows
+  sheet.getRange('B15:E15').setNumberFormat('$#,##0');
+  sheet.getRange('B16:E16').setNumberFormat('$#,##0');
   
   // Action Items
   sheet.getRange('A17').setValue('🔔 ACTION ITEMS').setFontSize(14).setFontWeight('bold');
   sheet.getRange('A19').setValue('🔴 No Appt Set (24h)').setFontWeight('bold');
-  sheet.getRange('A20').setFormula('=IFERROR(ARRAYFORMULA("→ "&FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!B:B<TODAY()-1,\'Lead Data\'!L:L=FALSE,\'Lead Data\'!Q:Q=FALSE)),"✓ None")');
+  sheet.getRange('A20').setFormula('=IFERROR(LET(items,FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!B:B<TODAY()-1,\'Lead Data\'!L:L=FALSE,\'Lead Data\'!S:S=FALSE,\'Lead Data\'!T:T="",\'Lead Data\'!A:A<>""),"→ "&TEXTJOIN(CHAR(10)&"→ ",TRUE,items)) ,"✓ None")');
+  sheet.getRange('A20').setWrap(true);
   
   sheet.getRange('A24').setValue('🟡 No Shows').setFontWeight('bold');
-  sheet.getRange('A25').setFormula('=IFERROR(ARRAYFORMULA("→ "&FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!N:N=FALSE,\'Lead Data\'!M:M<>"",\'Lead Data\'!M:M<TODAY(),\'Lead Data\'!Q:Q=FALSE)),"✓ None")');
+  sheet.getRange('A25').setFormula('=IFERROR(LET(items,FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!N:N=FALSE,\'Lead Data\'!M:M<>"",\'Lead Data\'!M:M<TODAY(),\'Lead Data\'!S:S=FALSE,\'Lead Data\'!T:T="",\'Lead Data\'!A:A<>""),"→ "&TEXTJOIN(CHAR(10)&"→ ",TRUE,items)) ,"✓ None")');
+  sheet.getRange('A25').setWrap(true);
   
   sheet.getRange('A29').setValue('🟠 Trials Expiring (3d)').setFontWeight('bold');
-  sheet.getRange('A30').setFormula('=IFERROR(ARRAYFORMULA("→ "&FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!P:P>=TODAY(),\'Lead Data\'!P:P<=TODAY()+3,\'Lead Data\'!Q:Q=FALSE,\'Lead Data\'!O:O<>"")),"✓ None")');
+  sheet.getRange('A30').setFormula('=IFERROR(LET(items,FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!R:R>=TODAY(),\'Lead Data\'!R:R<=TODAY()+3,\'Lead Data\'!S:S=FALSE,\'Lead Data\'!Q:Q<>"",\'Lead Data\'!T:T="",\'Lead Data\'!A:A<>""),"→ "&TEXTJOIN(CHAR(10)&"→ ",TRUE,items)) ,"✓ None")');
+  sheet.getRange('A30').setWrap(true);
   
   // NET GAIN/LOSS BY MEMBERSHIP TYPE
   sheet.getRange('A34').setValue('📊 NET GAIN/LOSS BY MEMBERSHIP TYPE (Selected Range)').setFontSize(14).setFontWeight('bold');
@@ -973,10 +1141,12 @@ function createDashboardTab(ss) {
   // Member Alerts (shifted down to row 42 to accommodate Net Gain/Loss section)
   sheet.getRange('A42').setValue('👥 MEMBER ALERTS').setFontSize(14).setFontWeight('bold');
   sheet.getRange('A44').setValue('🎯 Trials Ending (7d)').setFontWeight('bold');
-  sheet.getRange('A45').setFormula('=IFERROR(ARRAYFORMULA("→ "&FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!P:P>=TODAY(),\'Lead Data\'!P:P<=TODAY()+7,\'Lead Data\'!O:O<>"")),"✓ None")');
+  sheet.getRange('A45').setFormula('=IFERROR(LET(items,FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,\'Lead Data\'!P:P>=TODAY(),\'Lead Data\'!P:P<=TODAY()+7,\'Lead Data\'!O:O<>"",\'Lead Data\'!A:A<>""),"→ "&TEXTJOIN(CHAR(10)&"→ ",TRUE,items)) ,"✓ None")');
+  sheet.getRange('A45').setWrap(true);
   
   sheet.getRange('A49').setValue('🎂 Birthdays This Month').setFontWeight('bold');
-  sheet.getRange('A50').setFormula('=IFERROR(ARRAYFORMULA("→ "&FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,MONTH(\'Lead Data\'!G:G)=MONTH(TODAY()),\'Lead Data\'!Q:Q=TRUE,\'Lead Data\'!V:V<>TRUE,\'Lead Data\'!G:G<>"")),"✓ None")');
+  sheet.getRange('A50').setFormula('=IFERROR(LET(items,FILTER(\'Lead Data\'!C:C&" "&\'Lead Data\'!D:D,MONTH(\'Lead Data\'!G:G)=MONTH(TODAY()),\'Lead Data\'!Q:Q=TRUE,\'Lead Data\'!V:V<>TRUE,\'Lead Data\'!G:G<>""),"→ "&TEXTJOIN(CHAR(10)&"→ ",TRUE,items)) ,"✓ None")');
+  sheet.getRange('A50').setWrap(true);
   
   // SOURCE ANALYSIS TABLE (shifted down to row 55)
   sheet.getRange('A55').setValue('📈 SOURCE ANALYSIS (by Lead Source)').setFontSize(14).setFontWeight('bold');
@@ -1013,28 +1183,60 @@ function createDashboardTab(ss) {
     ))
   `);
   
-  // E57: Show Rate = Showed / Appointments
+  // E57: Show Rate = Showed / Appointments - HIGH FIX #8: Show "-" instead of 0 when no appointments
   sheet.getRange('E57').setFormula(`
-    =ARRAYFORMULA(IF(A57:A66="","",IFERROR(D57:D66/C57:C66,0)))
+    =ARRAYFORMULA(IF(A57:A66="","",IF(C57:C66=0,"-",IFERROR(D57:D66/C57:C66,0))))
   `);
   
-  // F57: Lead→Member Rate = Members / Leads
+  // F57: Lead→Member Rate = Members / Leads - HIGH FIX #8: Show "-" instead of 0 when no leads
   sheet.getRange('F57').setFormula(`
     =ARRAYFORMULA(IF(A57:A66="","",
-      IFERROR(
-        COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31)
-        /B57:B66,
-        0
+      IF(B57:B66=0,"-",
+        IFERROR(
+          COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31)
+          /B57:B66,
+          0
+        )
       )
     ))
   `);
   
   // G57: Spend (window) - sum daily spend by source in date range
   sheet.getRange('G57').setFormula(`
-    =ARRAYFORMULA(IF(A57:A66="","",
-      SUMIFS('_Daily Spend'!C:C,'_Daily Spend'!B:B,A57:A66,'_Daily Spend'!A:A,">="&'Settings & Budget'!$B$30,'_Daily Spend'!A:A,"<="&'Settings & Budget'!$B$31)
+    =ARRAYFORMULA(MAP(A57:A66,
+      LAMBDA(src,
+        IF(src="","",
+          LET(
+            startDate,'Settings & Budget'!$B$30,
+            endDate,'Settings & Budget'!$B$31,
+            rawMonths,'Settings & Budget'!$A$40:$A$100,
+            sources,'Settings & Budget'!$B$40:$B$100,
+            rates,'Settings & Budget'!$E$40:$E$100,
+            monthStarts,ARRAYFORMULA(IF(rawMonths="",,IF(ISNUMBER(rawMonths),DATE(YEAR(rawMonths),MONTH(rawMonths),1),DATE(VALUE(LEFT(rawMonths,4)),VALUE(MID(rawMonths,6,2)),1)))),
+            monthEnds,ARRAYFORMULA(IF(monthStarts="",,EOMONTH(monthStarts,0))),
+            valid,(sources=src)*(rates<>"")*(monthStarts<>"")*(monthEnds>=startDate)*(monthStarts<=endDate),
+            IF(SUM(valid)=0,0,
+              SUM(
+                MAP(
+                  FILTER(monthStarts,valid),
+                  FILTER(monthEnds,valid),
+                  FILTER(rates,valid),
+                  LAMBDA(mStart,mEnd,rate,
+                    LET(
+                      overlapStart,MAX(mStart,startDate),
+                      overlapEnd,MIN(mEnd,endDate),
+                      days,MAX(0,overlapEnd-overlapStart+1),
+                      days*rate
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
     ))
-  `); // ✅ UPDATED: Daily spend now in column C (was D)
+  `);
   
   // H57: CPL = Spend / Leads - CRITICAL FIX #3 + MEDIUM FIX #11: Show "Organic" for $0 spend
   sheet.getRange('H57').setFormula(`
@@ -1055,7 +1257,7 @@ function createDashboardTab(ss) {
   sheet.getRange('K57').setFormula(`
     =ARRAYFORMULA(IF(A57:A66="","",
       LET(
-        trials, COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!O:O,">="&'Settings & Budget'!$B$30,'Lead Data'!O:O,"<="&'Settings & Budget'!$B$31,'Lead Data'!O:O,"<>"),
+        trials, COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!Q:Q,">="&'Settings & Budget'!$B$30,'Lead Data'!Q:Q,"<="&'Settings & Budget'!$B$31,'Lead Data'!Q:Q,"<>"),
         IF(G57:G66=0, "Organic", IF(trials=0, IF(G57:G66>0, "Spend/0 Trials", "-"), G57:G66/trials))
       )
     ))
@@ -1065,7 +1267,7 @@ function createDashboardTab(ss) {
   sheet.getRange('L57').setFormula(`
     =ARRAYFORMULA(IF(A57:A66="","",
       LET(
-        members, COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31),
+        members, COUNTIFS('Lead Data'!H:H,A57:A66,'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31),
         IF(G57:G66=0, "Organic", IF(members=0, IF(G57:G66>0, "Spend/0 Members", "-"), G57:G66/members))
       )
     ))
@@ -1088,8 +1290,8 @@ function createDashboardTab(ss) {
   sheet.getRange('A67').setValue('Overall LTV:CAC Ratio:').setFontWeight('bold');
   // UX #4: Add tooltip to Overall LTV:CAC header
   sheet.getRange('A67').setNote('💰 Overall LTV:CAC Ratio - Your Most Important Profitability Metric!\n\nFormula: Average Lifetime Value ÷ Average CAC (across all sources)\n\nWhat it means:\n• <3x = ⚠️ LOSING MONEY - Review marketing spend!\n• 3-5x = ✅ PROFITABLE - Industry standard\n• 5-10x = ✅ HIGHLY PROFITABLE - Great job!\n• 10x+ = 🚀 EXCEPTIONAL - Scale this!\n\n💡 TIP: Focus on sources with highest LTV:CAC, not just lowest CAC!');
-  // CRITICAL FIX #3: Enhanced LTV:CAC calculation - shows descriptive message when no CAC data
-  sheet.getRange('B67').setFormula('=LET(avgLTV,AVERAGE(FILTER(B70:B80,A70:A80<>"")),avgCAC,AVERAGE(FILTER(C70:C80,A70:A80<>"",C70:C80>0)),IF(avgCAC=0,"No CAC Data",avgLTV/avgCAC))').setNumberFormat('0.0"x"').setFontWeight('bold').setFontSize(12);
+  // CRITICAL FIX #3: Enhanced LTV:CAC calculation - shows descriptive message when no CAC data + type checking
+  sheet.getRange('B67').setFormula('=LET(avgLTV,AVERAGE(FILTER(B70:B80,A70:A80<>"")),avgCAC,AVERAGE(FILTER(C70:C80,A70:A80<>"",C70:C80>0)),IF(OR(NOT(ISNUMBER(avgLTV)),NOT(ISNUMBER(avgCAC))),"-",IF(avgCAC=0,"No CAC Data",avgLTV/avgCAC)))').setNumberFormat('0.0"x"').setFontWeight('bold').setFontSize(12);
   sheet.getRange('C67').setFormula('=IF(ISNUMBER(B67),IF(B67>=5,"✅ HIGHLY PROFITABLE",IF(B67>=3,"✅ PROFITABLE","⚠️ REVIEW")),"⚠️")').setFontWeight('bold');
   sheet.getRange('D67').setValue('(Target: 5x+ | Industry: 3-5x)').setFontStyle('italic').setFontColor('#666666');
   
@@ -1102,7 +1304,7 @@ function createDashboardTab(ss) {
   sheet.getRange('D70').setNote('LTV:CAC Ratio = Customer Lifetime Value ÷ Customer Acquisition Cost\n\nWhat it means:\n• <3x = Unprofitable (losing money)\n• 3-5x = Profitable (industry standard)\n• 5-10x = Highly profitable (great!)\n• 10x+ = Exceptional (scale this!)\n\nYour Target: 5x or higher');
   
   // A71: Pull sources from Settings (single source of truth)
-  sheet.getRange('A71').setFormula('=ARRAYFORMULA(IF(LEN('Settings & Budget'!A14:A24)=0,"",'Settings & Budget'!A14:A24))');
+  sheet.getRange('A71').setFormula('=ARRAYFORMULA(IF(LEN(\'Settings & Budget\'!A14:A24)=0,"",\'Settings & Budget\'!A14:A24))');
   
   // B71: Avg LTV from _LTV Calculations (using INDEX-MATCH)
   sheet.getRange('B71').setFormula('=ARRAYFORMULA(IF(A71:A81="","",IFERROR(INDEX(\'_LTV Calculations\'!T:T, MATCH(A71:A81, \'_LTV Calculations\'!N:N, 0)), 0)))').setNumberFormat('$#,##0');
@@ -1191,7 +1393,7 @@ function createDashboardTab(ss) {
   sheet.getRange('A86:H86').setValues(staffPerfHeaders).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
   // Pull staff list from Settings
-  sheet.getRange('A87').setFormula('=ARRAYFORMULA(IF(LEN('Settings & Budget'!B14:B16)=0,"",'Settings & Budget'!B14:B16))');
+  sheet.getRange('A87').setFormula(`=ARRAYFORMULA(IF(LEN('Settings & Budget'!B14:B16)=0,"",'Settings & Budget'!B14:B16))`);
   
   // B87: Leads Assigned
   sheet.getRange('B87').setFormula(`
@@ -1217,7 +1419,7 @@ function createDashboardTab(ss) {
   // E87: Closes (Members)
   sheet.getRange('E87').setFormula(`
     =ARRAYFORMULA(IF(A87:A89="","",
-      COUNTIFS('Lead Data'!J:J,A87:A89,'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31)
+      COUNTIFS('Lead Data'!J:J,A87:A89,'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31)
     ))
   `);
   
@@ -1227,14 +1429,14 @@ function createDashboardTab(ss) {
   // G87: Avg Days to Close
   sheet.getRange('G87').setFormula(`
     =ARRAYFORMULA(IF(A87:A89="","",
-      IFERROR(AVERAGEIFS('Lead Data'!AE:AE,'Lead Data'!J:J,A87:A89,'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31),0)
+      IFERROR(AVERAGEIFS('Lead Data'!AE:AE,'Lead Data'!J:J,A87:A89,'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31),0)
     ))
   `).setNumberFormat('0.0');
   
   // H87: Total MRR Generated
   sheet.getRange('H87').setFormula(`
     =ARRAYFORMULA(IF(A87:A89="","",
-      SUMIFS('Lead Data'!T:T,'Lead Data'!J:J,A87:A89,'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31)
+      SUMIFS('Lead Data'!V:V,'Lead Data'!J:J,A87:A89,'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31)
     ))
   `).setNumberFormat('$#,##0');
   
@@ -1250,16 +1452,20 @@ function createDashboardTab(ss) {
   sheet.setColumnWidths(1, 12, 120);  // Columns A-L for Source Analysis table
   sheet.setFrozenRows(9);  // UX #1: Updated to freeze snapshot card + KPI headers
   
-  // Conditional formatting for KPIs (updated for new row positions: 10-16)
+  // Conditional formatting for KPIs (updated for Goal To Date removal)
+  // Status column is now E (was F)
   const onPace = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('ON PACE').setBackground('#b7e1cd').setFontColor('#0f6938')
-    .setRanges([sheet.getRange('F10:F16')]).build();
+    .whenTextContains('ON PACE').setBackground('#b7e1cd').setFontColor('#0f6938')
+    .setRanges([sheet.getRange('E10:E16')]).build();
   const behind = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('BEHIND').setBackground('#f4c7c3').setFontColor('#cc0000')
-    .setRanges([sheet.getRange('F10:F16')]).build();
+    .whenTextContains('BEHIND').setBackground('#f4c7c3').setFontColor('#cc0000')
+    .setRanges([sheet.getRange('E10:E16')]).build();
+  const over = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('OVER').setBackground('#fff3cd').setFontColor('#856404')
+    .setRanges([sheet.getRange('E10:E16')]).build();
   
   // Combine all conditional formatting rules (including snapshot card rules)
-  const allRules = [onPace, behind, ...snapshotRules, ...ltvCacRules, ...statusRules];
+  const allRules = [onPace, behind, over, ...snapshotRules, ...ltvCacRules, ...statusRules, ...netGainLossRules];
   sheet.setConditionalFormatRules(allRules);
   
   // Link date range to Settings
@@ -1273,62 +1479,67 @@ function createLeadDataTab(ss) {
   let sheet = ss.getSheetByName('Lead Data');
   if (!sheet) {
     sheet = ss.insertSheet('Lead Data');
-  } else if (sheet.getLastRow() > 1) {
-    return;
   } else {
     sheet.clear();
   }
   
-  // 32 columns (A-Z, AA-AF) - Added 6 smart columns including Last Touchpoint
+  const desiredRows = 3;
+  const currentRows = sheet.getMaxRows();
+  if (currentRows > desiredRows) {
+    sheet.deleteRows(desiredRows + 1, currentRows - desiredRows);
+  } else if (currentRows < desiredRows) {
+    sheet.insertRows(currentRows + 1, desiredRows - currentRows);
+  }
+  
+  // 33 columns (A-Z, AA-AH) - Added "Trial Start" date column + 6 smart columns including Last Touchpoint
   const headers = [[
     'Lead ID', 'Created Date', 'First Name', 'Last Name', 'Phone', 'Email', 'DOB',
     'Source', 'Campaign', 'Staff Owner', 'Location',
-    'Appt Set?', 'Appt Date', 'Show?', 'Start Trial?', 'Trial End',
+    'Appt Set?', 'Appt Date', 'Show?', 'Show Date', 'Start Trial?', 'Trial Start', 'Trial End',
     'Converted?', 'Member Start', 'Membership Type', 'MRR ($)', 'Upfront Fee ($)',
     'Cancelled?', 'Cancel Date', 'Cancel Reason', 'Notes', 'Current Status',
     'Age (Days)', 'Lead Score', 'Action Needed', 'Duplicate?', 'Days to Convert', 'Last Touchpoint'
   ]];
   
-  sheet.getRange('A1:AF1').setValues(headers).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff').setWrap(true);
+  sheet.getRange('A1:AH1').setValues(headers).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff').setWrap(true);
   
   // Add helpful notes for auto-fill behavior + MEDIUM FIX #16: Deletion warnings
-  sheet.getRange('A1').setNote('⚠️ LEAD ID\n\n❌ DO NOT DELETE ROWS!\n\nDeleting rows permanently removes data and cannot be undone.\n\n✅ To remove a member:\n1. Check "Cancelled?" (column V)\n2. Enter Cancel Date (column W)\n3. Select Cancel Reason (column X)\n\nThis preserves data for reporting and LTV analysis.\n\n💡 TIP: Copy row 2 down to add more leads - formulas will automatically copy!');
+  sheet.getRange('A1').setNote('⚠️ LEAD ID\n\n❌ DO NOT DELETE ROWS!\n\nDeleting rows permanently removes data and cannot be undone.\n\n✅ To remove a member:\n1. Check "Cancelled?" (column X)\n2. Enter Cancel Date (column Y)\n3. Select Cancel Reason (column Z)\n\nThis preserves data for reporting and LTV analysis.\n\n💡 TIP: Copy row 2 down to add more leads - formulas will automatically copy!\n\n⚠️ ROW CAPACITY: Auto-calculated columns work up to row 10,000. After that, formulas stop calculating and you\'ll need to extend ranges manually or contact support. See Help tab for details.');
   sheet.getRange('H1').setNote('🗺️ AUTO-MAPPED from UTM data via _UTM Tracking tab.\n\n✅ To manually override: Click cell → Select from dropdown\n\n🎨 COLOR-CODED by Source Type (UX #9):\n  • 🔴 Light Red = Paid Sources (Paid Search, Paid Social)\n  • 🟢 Light Green = Organic Sources (Organic Search, Direct Traffic, Social Media)\n  • 🔵 Light Blue = Referral Sources (Referrals, Member Referral, Third-Party)\n  • ⚠️ Yellow = Warning/Error (mapping issues)\n\n⚠️ Warning symbols indicate mapping issues:\n  • ⚠️ Not Tracked = Lead not in UTM Tracking\n  • ⚠️ No UTM = No UTM source provided\n  • ⚠️ Unmapped = UTM source not in Settings mapping table\n\n💡 Add new UTM mappings in Settings & Budget tab (columns G-H)');
-  sheet.getRange('O1').setNote('✅ Check this box to auto-fill with today\'s date! The checkbox will convert to a date automatically.');
-  sheet.getRange('Q1').setNote('✅ Check when lead becomes a paying member\n\n⚠️ Once checked, this member adds to MRR tracking.\n\nTo cancel a member:\n• Use "Cancelled?" checkbox (column V)\n• DO NOT delete the row\n\nDeleting active members loses revenue tracking!\n\nMember Start date (R) will auto-fill with today\'s date.');
-  sheet.getRange('V1').setNote('✅ Check this box to mark a member as cancelled\n\n⚠️ ALWAYS USE THIS INSTEAD OF DELETING ROWS!\n\nWhy?\n• Preserves historical data\n• Maintains LTV calculations\n• Enables churn analysis\n• Allows member reactivation\n• Prevents MRR tracking errors\n\nDeleting rows = permanent data loss!\n\nCancel Date (W) will auto-fill with today\'s date.');
-  sheet.getRange('AA1').setNote('📊 AGE (DAYS) - UX #11 Enhanced Visual System\n\nShows days since lead was created with visual urgency:\n\n🆕 0-3 days = New lead (green)\n⏱️ 4-7 days = Watch closely (light yellow)\n⚠️ 8-14 days = Warning - needs attention (yellow)\n🔴 15+ days = URGENT - follow up now! (red)\n\nColor-coded backgrounds help you spot old leads instantly.\n\nGoal: Contact all leads within 7 days!');
-  
-  // UX #3: Auto-Complete tips for dropdown fields
+  sheet.getRange('O1').setNote('✅ Automatically stamps the date/time when "Show?" is checked.\n\n⚠️ Feel free to override if the appointment happened earlier.');
+  sheet.getRange('P1').setNote('✅ CHECK THIS BOX when lead starts trial.\n\n📅 Trial Start date (column Q) will auto-fill with today\'s date!\n\n🧮 Trial End (column R) will auto-calculate based on trial length.\n\n💡 Keep checkbox checked to track trial status.');
+  sheet.getRange('Q1').setNote('📅 AUTO-FILLED when "Start Trial?" (column P) is checked.\n\n✅ Shows the date the trial started.\n\n🧮 Used to calculate Trial End date.\n\n⚠️ Feel free to manually override if trial started on a different date.');
+  sheet.getRange('R1').setNote('🧮 AUTO-CALCULATED: Trial Start date + trial length\n\n✅ Shows when trial expires.\n\n💡 Trial length is set in Settings & Budget (default: 14 days).\n\n⚠️ This is a formula - do not manually edit unless needed.');
+  sheet.getRange('S1').setNote('✅ Check when lead becomes a paying member\n\n⚠️ Once checked, this member adds to MRR tracking.\n\nTo cancel a member:\n• Use "Cancelled?" checkbox (column X)\n• DO NOT delete the row\n\nDeleting active members loses revenue tracking!\n\nMember Start date (T) will auto-fill with today\'s date.');
+  sheet.getRange('X1').setNote('✅ Check this box to mark a member as cancelled\n\n⚠️ ALWAYS USE THIS INSTEAD OF DELETING ROWS!\n\nWhy?\n• Preserves historical data\n• Maintains LTV calculations\n• Enables churn analysis\n• Allows member reactivation\n• Prevents MRR tracking errors\n\nDeleting rows = permanent data loss!\n\nCancel Date (Y) will auto-fill with today\'s date.');
   sheet.getRange('J1').setNote('👤 STAFF - Assign lead to team member\n\n⚡ SPEED TIP: Use TAB key for auto-complete!\n  • Type "Em" → TAB → "Emily (Sales)"\n  • Type "J" → TAB → First staff starting with J\n  • 40% faster than clicking dropdown!\n\n💡 Configure staff list in Settings & Budget tab.');
-  sheet.getRange('S1').setNote('🎫 MEMBERSHIP TYPE\n\n⚡ SPEED TIP: Use TAB key for auto-complete!\n  • Type "P" → TAB → "Personal Training"\n  • Type "G" → TAB → "General Membership"\n  • 40% faster than clicking!\n\n💡 Configure membership types in Settings & Budget tab.');
-  sheet.getRange('X1').setNote('📝 CANCEL REASON (required when Cancelled? is checked)\n\n⚡ SPEED TIP: Use TAB key for auto-complete!\n  • Type "P" → TAB → "Price Too High"\n  • Type "M" → TAB → "Moved Away"\n  • 40% faster than clicking dropdown!\n\n💡 Configure reasons in Settings & Budget tab.');
-  
-  // Add note for Notes column (Y1)
-  sheet.getRange('Y1').setNote('📝 MEMBER NOTES\n\nFree-text field for tracking member interactions, follow-ups, and important details.\n\n⚡ AUTO-UPDATE: When you edit this field, "Last Touchpoint" (column AF) automatically updates with the current timestamp!\n\n💡 TIP: Notes are visible on both Lead Data and Members tabs.\n\nBest practices:\n• Include date of interaction\n• Note action taken or promised\n• Mark follow-up dates\n• Track member preferences');
-  
-  // Add note for Last Touchpoint column (AF1)
-  sheet.getRange('AF1').setNote('⏰ LAST TOUCHPOINT (Auto-Updated)\n\n📌 This timestamp automatically updates when you edit the "Notes" column (Y).\n\n✅ Purpose:\n• Track when member was last contacted\n• Identify members needing follow-up\n• Measure engagement frequency\n• Sort by recency of contact\n\n⚠️ DO NOT manually edit this column - it updates automatically!\n\nTimestamp format: YYYY-MM-DD HH:MM:SS');
+  sheet.getRange('U1').setNote('🎫 MEMBERSHIP TYPE\n\n⚡ SPEED TIP: Use TAB key for auto-complete!\n  • Type "P" → TAB → "Personal Training"\n  • Type "G" → TAB → "General Membership"\n  • 40% faster than clicking!\n\n💡 Configure membership types in Settings & Budget tab.');
+  sheet.getRange('Z1').setNote('📝 CANCEL REASON (required when Cancelled? is checked)\n\n⚡ SPEED TIP: Use TAB key for auto-complete!\n  • Type "P" → TAB → "Price Too High"\n  • Type "M" → TAB → "Moved Away"\n  • 40% faster than clicking dropdown!\n\n💡 Configure reasons in Settings & Budget tab.');
+  sheet.getRange('AA1').setNote('📝 MEMBER NOTES\n\nFree-text field for tracking member interactions, follow-ups, and important details.\n\n⚡ AUTO-UPDATE: When you edit this field, "Last Touchpoint" (column AH) automatically updates with the current timestamp!\n\n💡 TIP: Notes are visible on both Lead Data and Members tabs.\n\nBest practices:\n• Include date of interaction\n• Note action taken or promised\n• Mark follow-up dates\n• Track member preferences');
+  sheet.getRange('AH1').setNote('⏰ LAST TOUCHPOINT (Auto-Updated)\n\n📌 This timestamp automatically updates when you edit the "Notes" column (AA).\n\n✅ Purpose:\n• Track when member was last contacted\n• Identify members needing follow-up\n• Measure engagement frequency\n• Sort by recency of contact\n\n⚠️ DO NOT manually edit this column - it updates automatically!\n\nTimestamp format: YYYY-MM-DD HH:MM:SS');
+  sheet.getRange('AC1').setNote('📊 AGE (DAYS) - UX #11 Enhanced Visual System\n\nShows days since lead was created with visual urgency:\n\n🆕 0-3 days = New lead (green)\n⏱️ 4-7 days = Watch closely (light yellow)\n⚠️ 8-14 days = Warning - needs attention (yellow)\n🔴 15+ days = URGENT - follow up now! (red)\n\nColor-coded backgrounds help you spot old leads instantly.\n\nGoal: Contact all leads within 7 days!');
   
   // Auto formulas
   // H2: Source (lookup from UTM Tracking) - CRITICAL FIX #2: Enhanced with better error handling - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('H2').setFormula(`=ARRAYFORMULA(IF(A2:A5000="","",
+  sheet.getRange('H2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",
     IFERROR(
-      INDEX('_UTM Tracking'!O:O, MATCH(A2:A5000, '_UTM Tracking'!A:A, 0)),
+      INDEX('_UTM Tracking'!O:O, MATCH(A2:A, '_UTM Tracking'!A:A, 0)),
       "⚠️ Not Tracked"
     )
   ))`);
   
-  // P2: Trial End (calculated from Trial Start date + trial length) - HIGH FIX #4 & #7: Simplified to eliminate race condition
-  // Removed checkbox check - just calculates when O is a date (after auto-conversion)
-  sheet.getRange('P2').setFormula('=ARRAYFORMULA(IF(A2:A5000="","",IF(ISNUMBER(O2:O5000),O2:O5000+\'Settings & Budget\'!B33,"")))');
+  // Q2: Trial Start (auto-filled when Start Trial? checkbox is checked - via onEdit handler)
+  // This is a date column, not a formula column
   
-  // Z2: Current Status (check if O is date, not boolean) - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('Z2').setFormula('=ARRAYFORMULA(IF(A2:A5000="","",IF(V2:V5000=TRUE,"Cancelled",IF(Q2:Q5000=TRUE,"Member",IF((O2:O5000<>"")*ISNUMBER(O2:O5000),"Trial",IF(N2:N5000=TRUE,"Show",IF(L2:L5000=TRUE,"Appt Set","Lead")))))))');
+  // R2: Trial End (calculated from Trial Start date + trial length) - FIXED: Now references Q2:Q (Trial Start date) + DATEVALUE() for timezone normalization
+  sheet.getRange('R2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(ISNUMBER(Q2:Q),DATEVALUE(Q2:Q)+\'Settings & Budget\'!B33,"")))');
   
-  // AA2: Age (Days) - Days since created - HIGH FIX #4 + UX #11: Enhanced with emoji indicators
-  sheet.getRange('AA2').setFormula(`=ARRAYFORMULA(IF(A2:A5000="","",IF(B2:B5000="","",
-    LET(age, INT(TODAY()-B2:B5000),
+  // AB2: Current Status (check if T is date for Member, Q for Trial) - FIXED: Updated column references
+  sheet.getRange('AB2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(W2:W=TRUE,"Cancelled",IF(S2:S=TRUE,"Member",IF((T2:T<>"")*ISNUMBER(T2:T),"Trial",IF(N2:N=TRUE,"Show",IF(L2:L=TRUE,"Appt Set","Lead"))))))))');
+  
+  // AC2: Age (Days) - Days since created - HIGH FIX #4 + UX #11: Enhanced with emoji indicators
+  sheet.getRange('AC2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",IF(B2:B="","",
+    LET(age, INT(TODAY()-B2:B),
       IF(age<=3, "🆕 "&age,
         IF(age<=7, "⏱️ "&age,
           IF(age<=14, "⚠️ "&age,
@@ -1339,31 +1550,31 @@ function createLeadDataTab(ss) {
     )
   )))`);
   
-  // AB2: Lead Score - Hot/Warm/Cold based on multiple factors - HIGH FIX #4 + MEDIUM FIX #12: Trial expiring bonus
-  sheet.getRange('AB2').setFormula(`=ARRAYFORMULA(IF(A2:A5000="","",
+  // AD2: Lead Score - Hot/Warm/Cold based on multiple factors - FIXED: Updated column references
+  sheet.getRange('AD2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",
     LET(
       score, 
-      IF(N2:N5000=TRUE,50,0) + 
-      IF(REGEXMATCH(LOWER(H2:H5000),"referral|member"),30,0) +
-      IF(L2:L5000=TRUE,20,0) +
-      IF(AA2:AA5000<3,15,IF(AA2:AA5000<7,10,IF(AA2:AA5000<14,5,0))) -
-      IF(AA2:AA5000>30,20,0) -
-      IF(AA2:AA5000>60,30,0) +
-      IF(ISNUMBER(P2:P5000)*(P2:P5000<=TODAY()+3)*(P2:P5000>=TODAY()), 50, 0),
+      IF(N2:N=TRUE,50,0) + 
+      IF(REGEXMATCH(LOWER(H2:H),"referral|member"),30,0) +
+      IF(L2:L=TRUE,20,0) +
+      IF(AC2:AC<3,15,IF(AC2:AC<7,10,IF(AC2:AC<14,5,0))) -
+      IF(AC2:AC>30,20,0) -
+      IF(AC2:AC>60,30,0) +
+      IF(ISNUMBER(R2:R)*(R2:R<=TODAY()+3)*(R2:R>=TODAY()), 50, 0),
       IF(score>=70,"🔥 HOT",IF(score>=40,"🟡 WARM","❄️ COLD"))
     )
   ))`);
   
-  // AC2: Action Needed - Smart next step - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('AC2').setFormula(`=ARRAYFORMULA(IF(A2:A5000="","",
-    IF(Q2:Q5000=TRUE,"✅ Member",
-      IF(V2:V5000=TRUE,"⛔ Cancelled",
-        IF((O2:O5000<>"")*(P2:P5000<=TODAY()+3),"🔥 TRIAL EXPIRING!",
-          IF((L2:L5000=FALSE)*(AA2:AA5000>=2),"📞 SET APPOINTMENT",
-            IF((L2:L5000=TRUE)*(N2:N5000=FALSE)*(M2:M5000<TODAY()),"⚠️ NO-SHOW - FOLLOW UP",
-              IF((N2:N5000=TRUE)*(O2:O5000=""),"🎯 OFFER TRIAL",
-                IF((N2:N5000=TRUE)*(O2:O5000<>"")*(Q2:Q5000=FALSE),"💰 CLOSE DEAL",
-                  IF(AA2:AA5000>=7,"⏰ OVERDUE CHECK-IN",
+  // AE2: Action Needed - Smart next step - FIXED: Updated all column references
+  sheet.getRange('AE2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",
+    IF(S2:S=TRUE,"✅ Member",
+      IF(W2:W=TRUE,"⛔ Cancelled",
+        IF((Q2:Q<>"")*(R2:R<=TODAY()+3),"🔥 TRIAL EXPIRING!",
+          IF((L2:L=FALSE)*(AC2:AC>=2),"📞 SET APPOINTMENT",
+            IF((L2:L=TRUE)*(N2:N=FALSE)*(M2:M<TODAY()),"⚠️ NO-SHOW - FOLLOW UP",
+              IF((N2:N=TRUE)*(Q2:Q=""),"🎯 OFFER TRIAL",
+                IF((N2:N=TRUE)*(Q2:Q<>"")*(S2:S=FALSE),"💰 CLOSE DEAL",
+                  IF(AC2:AC>=7,"⏰ OVERDUE CHECK-IN",
                     "✓ On Track"
                   )
                 )
@@ -1375,86 +1586,87 @@ function createLeadDataTab(ss) {
     )
   ))`);
   
-  // AD2: Duplicate Check - Flag potential duplicates - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('AD2').setFormula('=ARRAYFORMULA(IF(A2:A5000="","",IF(OR(COUNTIF(E:E,E2:E5000)>1,COUNTIF(F:F,F2:F5000)>1),"⚠️ CHECK","✓")))');
+  // AF2: Duplicate Check - Flag potential duplicates - No changes needed (E and F columns unchanged)
+  sheet.getRange('AF2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(OR(COUNTIF(E:E,E2:E)>1,COUNTIF(F:F,F2:F)>1),"⚠️ CHECK","✓")))');
   
-  // AE2: Days to Convert - Time from lead to member - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('AE2').setFormula('=ARRAYFORMULA(IF(A2:A5000="","",IF((Q2:Q5000=TRUE)*(R2:R5000<>""),INT(R2:R5000-B2:B5000),"")))');
+  // AG2: Days to Convert - Time from lead to member - FIXED: Updated column references (S for Converted, T for Member Start)
+  sheet.getRange('AG2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF((S2:S=TRUE)*(T2:T<>""),INT(T2:T-B2:B),"")))');
   
   // Column widths
   sheet.setColumnWidth(1, 120);  // Lead ID
   sheet.setColumnWidth(2, 110);  // Created Date
   sheet.setColumnWidths(3, 5, 100);
   sheet.setColumnWidths(8, 3, 120);
-  sheet.setColumnWidths(11, 15, 100);
-  sheet.setColumnWidth(25, 200);  // Notes
+  sheet.setColumnWidths(11, 17, 100);  // Extended to include Q (Trial Start)
+  sheet.setColumnWidth(27, 200);  // Notes (was 26, now 27 = AA)
   
   // Formats
-  const dateColumns = ['B', 'G', 'M', 'O', 'P', 'R', 'W'];
+  const dateColumns = ['B', 'G', 'M', 'O', 'Q', 'T', 'Y'];  // FIXED: Added Q (Trial Start), updated to T and Y
   dateColumns.forEach(col => sheet.getRange(col + ':' + col).setNumberFormat('yyyy-mm-dd'));
-  sheet.getRange('T:U').setNumberFormat('$#,##0.00');
+  sheet.getRange('V:W').setNumberFormat('$#,##0.00');  // FIXED: MRR and Upfront Fee (was T:U, now V:W)
   
   // Visual cues for auto columns
   sheet.getRange('H:H').setBackground('#e8f0fe').setNote('Auto-filled from UTM tracking');
-  sheet.getRange('P:P').setBackground('#d9ead3').setNote('Auto-calculated: Trial Start + trial length');
-  sheet.getRange('Z:Z').setBackground('#d9ead3').setNote('Auto-calculated from checkboxes');
+  sheet.getRange('Q:Q').setBackground('#d9ead3').setNote('Auto-filled when Start Trial? is checked');
+  sheet.getRange('R:R').setBackground('#d9ead3').setNote('Auto-calculated: Trial Start + trial length');
+  sheet.getRange('AB:AB').setBackground('#d9ead3').setNote('Auto-calculated from checkboxes');
   
-  // Smart columns styling
-  sheet.getRange('AA:AA').setBackground('#fff3cd').setNote('Auto-calculated: Days since created');
-  sheet.getRange('AB:AB').setBackground('#e7f4e4').setFontWeight('bold').setNote('Auto-scored: 🔥 Hot (70+), 🟡 Warm (40-69), ❄️ Cold (<40)');
-  sheet.getRange('AC:AC').setBackground('#fce8e6').setFontWeight('bold').setNote('Smart next action based on lead stage');
-  sheet.getRange('AD:AD').setBackground('#f4cccc').setNote('Flags potential duplicates by phone/email');
-  sheet.getRange('AE:AE').setBackground('#d9ead3').setNote('Auto-calculated: Days from lead to member');
-  sheet.getRange('AF:AF').setBackground('#e8f0fe').setNote('Auto-updated: Timestamp of last note edit');
+  // Smart columns styling  
+  sheet.getRange('AC:AC').setBackground('#fff3cd').setNote('Auto-calculated: Days since created');
+  sheet.getRange('AD:AD').setBackground('#e7f4e4').setFontWeight('bold').setNote('Auto-scored: 🔥 Hot (70+), 🟡 Warm (40-69), ❄️ COLD (<40)');
+  sheet.getRange('AE:AE').setBackground('#fce8e6').setFontWeight('bold').setNote('Smart next action based on lead stage');
+  sheet.getRange('AF:AF').setBackground('#f4cccc').setNote('Flags potential duplicates by phone/email');
+  sheet.getRange('AG:AG').setBackground('#d9ead3').setNote('Auto-calculated: Days from lead to member');
+  sheet.getRange('AH:AH').setBackground('#e8f0fe').setNote('Auto-updated: Timestamp of last note edit');
   
-  // Column widths for new columns
-  sheet.setColumnWidth(27, 100);  // Age
-  sheet.setColumnWidth(28, 120);  // Lead Score
-  sheet.setColumnWidth(29, 180);  // Action Needed
-  sheet.setColumnWidth(30, 100);  // Duplicate
-  sheet.setColumnWidth(31, 120);  // Days to Convert
-  sheet.setColumnWidth(32, 160);  // Last Touchpoint
+  // Column widths for smart columns
+  sheet.setColumnWidth(29, 100);  // AC - Age (Days)
+  sheet.setColumnWidth(30, 120);  // AD - Lead Score
+  sheet.setColumnWidth(31, 180);  // AE - Action Needed
+  sheet.setColumnWidth(32, 100);  // AF - Duplicate
+  sheet.setColumnWidth(33, 120);  // AG - Days to Convert
+  sheet.setColumnWidth(34, 160);  // AH - Last Touchpoint
   
-  // Conditional formatting for Lead Score
+  // Conditional formatting for Lead Score (AD:AD)
   const hotRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('🔥').setBackground('#d4edda').setFontColor('#155724')
-    .setRanges([sheet.getRange('AB:AB')]).build();
+    .setRanges([sheet.getRange('AD:AD')]).build();
   const warmRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('🟡').setBackground('#fff3cd').setFontColor('#856404')
-    .setRanges([sheet.getRange('AB:AB')]).build();
+    .setRanges([sheet.getRange('AD:AD')]).build();
   const coldRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('❄️').setBackground('#cfe2ff').setFontColor('#084298')
-    .setRanges([sheet.getRange('AB:AB')]).build();
-  
-  // Conditional formatting for Action Needed urgency
-  const urgentRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextContains('🔥').setBackground('#f8d7da').setFontColor('#721c24')
-    .setRanges([sheet.getRange('AC:AC')]).build();
-  const warningRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextContains('⚠️').setBackground('#fff3cd').setFontColor('#856404')
-    .setRanges([sheet.getRange('AC:AC')]).build();
-  const overdueRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextContains('⏰').setBackground('#ffeeba').setFontColor('#856404')
-    .setRanges([sheet.getRange('AC:AC')]).build();
-  
-  // Conditional formatting for Duplicates
-  const dupRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextContains('⚠️').setBackground('#f8d7da').setFontColor('#721c24')
     .setRanges([sheet.getRange('AD:AD')]).build();
   
-  // Conditional formatting for Age (UX #11: Enhanced with emoji-based colors)
+  // Conditional formatting for Action Needed urgency (AE:AE)
+  const urgentRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('🔥').setBackground('#f8d7da').setFontColor('#721c24')
+    .setRanges([sheet.getRange('AE:AE')]).build();
+  const warningRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('⚠️').setBackground('#fff3cd').setFontColor('#856404')
+    .setRanges([sheet.getRange('AE:AE')]).build();
+  const overdueRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('⏰').setBackground('#ffeeba').setFontColor('#856404')
+    .setRanges([sheet.getRange('AE:AE')]).build();
+  
+  // Conditional formatting for Duplicates (AF:AF)
+  const dupRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('⚠️').setBackground('#f8d7da').setFontColor('#721c24')
+    .setRanges([sheet.getRange('AF:AF')]).build();
+  
+  // Conditional formatting for Age (AC:AC) - UX #11: Enhanced with emoji-based colors
   const urgentLeadRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('🔴').setBackground('#f8d7da').setFontColor('#721c24')
-    .setRanges([sheet.getRange('AA:AA')]).build();
+    .setRanges([sheet.getRange('AC:AC')]).build();
   const warningLeadRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('⚠️').setBackground('#fff3cd').setFontColor('#856404')
-    .setRanges([sheet.getRange('AA:AA')]).build();
+    .setRanges([sheet.getRange('AC:AC')]).build();
   const watchLeadRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('⏱️').setBackground('#fffbea').setFontColor('#9f7a00')
-    .setRanges([sheet.getRange('AA:AA')]).build();
+    .setRanges([sheet.getRange('AC:AC')]).build();
   const newLeadRule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('🆕').setBackground('#e7f4e4').setFontColor('#2d5f2e')
-    .setRanges([sheet.getRange('AA:AA')]).build();
+    .setRanges([sheet.getRange('AC:AC')]).build();
   
   // UX #9: Color-Coded Source Categories (Paid/Organic/Referral)
   // Paid Sources (light red background)
@@ -1492,47 +1704,52 @@ function createLeadDataTab(ss) {
     .whenTextContains('⚠️').setBackground('#fff3cd').setFontColor('#856404')
     .setRanges([sheet.getRange('H:H')]).build();
   
-  // MEDIUM FIX #16: Highlight active members (visual warning against deletion)
+  // MEDIUM FIX #16: Highlight active members (visual warning against deletion) - FIXED: Updated column references
   const activeMemberRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied('=AND($Q2=TRUE, $V2=FALSE)')
+    .whenFormulaSatisfied('=AND($S2=TRUE, $W2=FALSE)')
     .setBackground('#e7f4e4')  // Light green background
-    .setRanges([sheet.getRange('A2:AE5000')])
+    .setRanges([sheet.getRange('A2:AH5000')])
     .build();
   
   const rules = [hotRule, warmRule, coldRule, urgentRule, warningRule, overdueRule, dupRule, urgentLeadRule, warningLeadRule, watchLeadRule, newLeadRule, paidSourceRule1, paidSourceRule2, organicSourceRule1, organicSourceRule2, organicSourceRule3, referralSourceRule1, referralSourceRule2, referralSourceRule3, sourceWarningRule, activeMemberRule];
   sheet.setConditionalFormatRules(rules);
   
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // COLUMN GROUPS (Phase 2.1 - Mobile-Friendly Collapsible Sections)
+  // COLUMN GROUPS (Collapsible Sections) - UPDATED for new Trial Start column
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   
-  // Group 1: FUNNEL (Columns L-P: 12-16)
-  sheet.getRange('L:P').shiftColumnGroupDepth(1);
+  // Group 1: FUNNEL (Columns L-Q: 12-17) - Includes Appt Set/Date, Show/Date, Trial Start checkbox/date
+  sheet.getRange('L:Q').shiftColumnGroupDepth(1);
   
-  // Group 2: CONVERSION (Columns Q-W: 17-23)
-  sheet.getRange('Q:W').shiftColumnGroupDepth(1);
+  // Group 2: CONVERSION (Columns R-X: 18-24) - Includes Trial End, Converted, Member Start, Membership, MRR, Upfront Fee, Cancelled
+  sheet.getRange('R:X').shiftColumnGroupDepth(1);
   
-  // Group 3: ADMIN (Columns X-Z: 24-26)
-  sheet.getRange('X:Z').shiftColumnGroupDepth(1);
+  // Group 3: ADMIN (Columns Y-AA: 25-27) - Includes Cancel Date, Cancel Reason, Notes
+  sheet.getRange('Y:AA').shiftColumnGroupDepth(1);
   
-  // Note: CORE (A-K) and SMART (AA-AE) remain always visible
+  // Note: CORE (A-K) and SMART (AC-AH) remain always visible
   
   Logger.log('✅ Column groups added: FUNNEL, CONVERSION, ADMIN are collapsible');
+  Logger.log('✅ NEW COLUMN ADDED: Trial Start (Q) - auto-fills when Start Trial? checkbox is checked');
   
   sheet.setFrozenRows(1);
   sheet.setFrozenColumns(4);
 }
 
 /**
- * Tab 3: Members (updated for new columns - now includes smart columns)
+ * Tab 3: Members (updated for new Trial Start column - now 34 columns A-AH)
  */
 function createMembersTab(ss) {
   let sheet = ss.getSheetByName('Members');
-  if (!sheet) sheet = ss.insertSheet('Members');
-  else sheet.clear();
-  
-  // Updated to include column AF (Last Touchpoint) - now A1:AF
-  sheet.getRange('A1').setFormula('={\'Lead Data\'!A1:AF1; QUERY(FILTER(\'Lead Data\'!A2:AF,\'Lead Data\'!Q2:Q=TRUE,\'Lead Data\'!V2:V<>TRUE),"WHERE Col1 IS NOT NULL",0)}');
+  if (!sheet) {
+    sheet = ss.insertSheet('Members');
+  } else {
+    sheet.clear();
+  }
+
+  // FIXED: Updated to include new Trial Start column (AH instead of AG), and updated Converted/Cancelled column references
+  const membersFormula = "={'Lead Data'!A1:AH1; LET(filtered, IFERROR(FILTER('Lead Data'!A2:AH,'Lead Data'!S2:S=TRUE,'Lead Data'!W2:W<>TRUE), {}), IF(ROWS(filtered)=0, FILTER('Lead Data'!A2:AH, ROW('Lead Data'!A2:A)=0), IFERROR(QUERY(filtered,\"WHERE Col1 IS NOT NULL\",0), filtered)))}";
+  sheet.getRange('A1').setFormula(membersFormula);
   sheet.setFrozenRows(1);
 }
 
@@ -1561,24 +1778,33 @@ function createSettingsTab(ss) {
     ['Show Rate (%)', 0.70],
     ['Close Rate (%)', 0.50],
     ['New Members', 42],
+    ['MRR ($)', 4500],
     ['CAC ($)', 150],
     ['Monthly Churn (%)', 0.05],
     ['ARPU ($)', 150]
   ];
   sheet.getRange(2, 1, targets.length, 2).setValues(targets);
   sheet.getRange('A2:B2').setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
+  // Format targets: counts, percentages, and currency shown correctly
+  sheet.getRange('B3').setNumberFormat('0');          // Leads
+  sheet.getRange('B4:B6').setNumberFormat('0.0%');    // Set/Show/Close rates
+  sheet.getRange('B7').setNumberFormat('0');          // New Members
+  sheet.getRange('B8').setNumberFormat('$#,##0');     // MRR ($)
+  sheet.getRange('B9').setNumberFormat('$#,##0');     // CAC ($)
+  sheet.getRange('B10').setNumberFormat('0.0%');      // Monthly Churn (%)
+  sheet.getRange('B11').setNumberFormat('$#,##0');    // ARPU ($)
   
   // Dropdowns
   sheet.getRange('A12').setValue('📋 DROPDOWN LISTS').setFontSize(14).setFontWeight('bold');
   const listHeaders = [['Sources', 'Staff', 'Location', 'Types', 'Cancel Reasons', '', 'Status Values']];
   sheet.getRange('A13:G13').setValues(listHeaders).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
-  const sources = ['Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 'Member Referral', 'Walk-In'];
-  const staff = ['Front Desk', 'Coach A', 'Coach B'];
-  const location = 'Main Location'; // ✅ SIMPLIFIED: Single location (will be set to gym name by wizard)
-  const types = ['PT', 'Small Group', 'General', 'Class Pack'];
-  const reasons = ['Price', 'Moved', 'Injury', 'Service', 'Location', 'Other'];
-  const statusValues = ['Lead', 'Appt Set', 'Show', 'Trial', 'Member', 'Cancelled'];
+  const sources = DefaultLists.SOURCES;
+  const staff = DefaultLists.STAFF;
+  const location = DefaultLists.LOCATION; // ✅ SIMPLIFIED: Single location (will be set to gym name by wizard)
+  const types = DefaultLists.MEMBERSHIP_TYPES;
+  const reasons = DefaultLists.CANCEL_REASONS;
+  const statusValues = DefaultLists.STATUS_VALUES;
   
   sheet.getRange(14, 1, sources.length, 1).setValues(sources.map(s => [s]));
   sheet.getRange(14, 2, staff.length, 1).setValues(staff.map(s => [s]));
@@ -1615,14 +1841,23 @@ function createSettingsTab(ss) {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   
   // Add data validation for custom date range (B28:B29)
-  // Requires valid dates between 1900-2100
-  const dateRangeValidation = SpreadsheetApp.newDataValidation()
+  // B28 (Start): Requires valid dates between 1900-2100
+  const startDateValidation = SpreadsheetApp.newDataValidation()
     .requireDate()
     .requireDateBetween(new Date(1900, 0, 1), new Date(2100, 11, 31))
     .setAllowInvalid(false)
     .setHelpText('⚠️ Enter a valid date (YYYY-MM-DD)')
     .build();
-  sheet.getRange('B28:B29').setDataValidation(dateRangeValidation);
+  sheet.getRange('B28').setDataValidation(startDateValidation);
+  
+  // B29 (End): Must be after B28 (Start Date)
+  const endDateValidation = SpreadsheetApp.newDataValidation()
+    .requireDate()
+    .requireDateAfter(sheet.getRange('B28'))
+    .setAllowInvalid(false)
+    .setHelpText('⚠️ End Date must be AFTER Start Date (B28)')
+    .build();
+  sheet.getRange('B29').setDataValidation(endDateValidation);
   
   // Add helpful notes explaining constraints
   sheet.getRange('B28').setNote('⚠️ Custom Start Date\n\nMust be BEFORE End Date (B29).\n\nOnly used when "Custom Range" is selected.\n\nIf Start > End, both cells will be highlighted in RED.');
@@ -1730,7 +1965,7 @@ function createSettingsTab(ss) {
   // Requires format: YYYY-MM (e.g., 2025-10)
   // Use INDIRECT to make the validation relative to each cell
   const monthValidation = SpreadsheetApp.newDataValidation()
-    .requireFormulaSatisfied('=OR(INDIRECT("RC",FALSE)="", REGEXMATCH(TEXT(INDIRECT("RC",FALSE),"@"), "^\\d{4}-\\d{2}$"))')
+    .requireFormulaSatisfied('=OR(INDIRECT("RC",FALSE)="", REGEXMATCH(INDIRECT("RC",FALSE)&"", "^\\d{4}-\\d{2}$"))')
     .setAllowInvalid(false)
     .setHelpText('⚠️ Invalid format! Use YYYY-MM (e.g., 2025-10 for October 2025)')
     .build();
@@ -1738,10 +1973,37 @@ function createSettingsTab(ss) {
   
   // Enhance help text for Month header
   sheet.getRange('A39').setNote('💡 Enter months in YYYY-MM format (e.g., 2025-10 for October 2025)\n\nThis ensures accurate daily spend calculations.');
+  sheet.getRange('A40:A100').setNumberFormat('@');
   
   sheet.setColumnWidths(1, 6, 150);
   sheet.setColumnWidths(7, 3, 150);
   sheet.setFrozenRows(2);
+  
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // HIGH FIX #10: Protect Critical Date Range Cells
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  //
+  // PROBLEM: If user inserts rows above row 30, named ranges (rngStart, rngEnd) 
+  // break because they reference specific cell addresses (B30, B31).
+  //
+  // SOLUTION: Protect rows 27-33 with warning-only mode (allows edits but warns user)
+  //
+  // Protected rows:
+  // - B27: Date Range Preset selector
+  // - B28-B29: Custom Start/End dates
+  // - B30-B31: Calculated Start/End dates (used by all DASHBOARD formulas)
+  // - B33: Trial Length
+  //
+  // Protection level: Warning Only (users can override, but are cautioned)
+  //
+  try {
+    const protection = sheet.getRange('A27:Z33').protect();
+    protection.setDescription('⚠️ CRITICAL DATE RANGE SYSTEM - DO NOT INSERT/DELETE ROWS HERE\n\nThese rows contain:\n• Date range selector (B27)\n• Custom dates (B28-B29)\n• Calculated dates used by ALL formulas (B30-B31)\n• Trial length (B33)\n\nInserting/deleting rows will break the entire DASHBOARD.\n\nTo edit values: Click "Edit anyway" when prompted.\nTo add marketing budget: Use rows 40+ below.');
+    protection.setWarningOnly(true);
+    Logger.log('✅ Protected critical Settings rows 27-33 (warning-only mode)');
+  } catch (err) {
+    Logger.log('⚠️ Could not protect Settings rows 27-33: ' + err.message);
+  }
 }
 
 /**
@@ -1771,10 +2033,16 @@ function createStaffTab(ss) {
 /**
  * Tab 7: Help (Auto-hidden - Phase 1.3)
  */
-function createHelpTab(ss) {
+function createHelpTab(ss, force) {
   let sheet = ss.getSheetByName('Help');
-  if (!sheet) sheet = ss.insertSheet('Help');
-  else sheet.clear();
+  if (!sheet) {
+    sheet = ss.insertSheet('Help');
+  } else if (!force && sheet.getLastRow() > 0) {
+    Logger.log('ℹ️ Help tab already populated; skipping rewrite.');
+    return;
+  } else {
+    sheet.clear();
+  }
   
   const content = [
     ['🏋️ GYM OPS TRACKER v2.1 - HELP'],
@@ -1790,7 +2058,7 @@ function createHelpTab(ss) {
     ['  • Source auto-fills from UTM tracking'],
     ['  • Manual: Check boxes (Appt Set, Show, Converted, Cancelled)'],
     ['  • Manual: Fill MRR, Upfront Fee, Membership Type'],
-    ['  • Column Groups: Collapse/expand sections for easier mobile use'],
+    ['  • Column Groups: Collapse/expand sections for easier viewing'],
     [''],
     ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'],
     [''],
@@ -1957,16 +2225,12 @@ function createHelpTab(ss) {
     ['  • DASHBOARD shows LTV:CAC by source'],
     ['  • Green = profitable, Yellow = optimize, Red = review'],
     [''],
-    ['📱 MOBILE VIEWS'],
-    ['  • Staff View: Front desk, filtered by staff member'],
-    ['  • Sales View: Prioritized by lead score for closers'],
-    ['  • Both show only essential columns'],
-    [''],
     ['🗺️ UTM ATTRIBUTION & SOURCE MAPPING'],
     ['  • GHL workflow populates _UTM Tracking tab'],
     ['  • Settings & Budget has mapping table (fb_ad → Paid Social)'],
     ['  • Source in Lead Data auto-fills from mapping'],
     ['  • Add custom mappings in Settings & Budget column G-H'],
+    ['  • Spend calculations read monthly budgets directly (no extra steps)'],
     [''],
     ['⚠️ SOURCE WARNINGS - What They Mean:'],
     ['  • ⚠️ Not Tracked = Lead ID not found in _UTM Tracking tab'],
@@ -1990,6 +2254,38 @@ function createHelpTab(ss) {
     [''],
     ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'],
     [''],
+    ['⚠️ IMPORTANT: ROW CAPACITY LIMITS'],
+    [''],
+    ['Auto-Calculation Limit: 10,000 Rows'],
+    ['  • Lead Data auto-calculated columns (Source, Status, Age, etc.) work for rows 2-10,000'],
+    ['  • After row 10,000, auto-formulas will stop calculating'],
+    ['  • Manual entry still works, but calculated fields will be blank'],
+    [''],
+    ['What happens at 10,000 rows?'],
+    ['  • Rows 10,001+ will not have Source, Current Status, Age, or Lead Score auto-filled'],
+    ['  • DASHBOARD metrics will be incomplete (missing leads beyond row 10,000)'],
+    ['  • You will need to manually extend formulas or contact support'],
+    [''],
+    ['When will you hit this limit?'],
+    ['  • 100 leads/month = 100 months (8+ years)'],
+    ['  • 200 leads/month = 50 months (4+ years)'],
+    ['  • 500 leads/month = 20 months (1.5+ years)'],
+    [''],
+    ['How to monitor:'],
+    ['  • Check "Lead ID" column - last row number shows total leads'],
+    ['  • When approaching 9,500 rows, plan for expansion or archiving'],
+    ['  • Export old data regularly (Gym Ops → Export Lead Data to CSV)'],
+    [''],
+    ['Solutions when approaching limit:'],
+    ['  1. Archive old leads (closed/lost) to separate sheet'],
+    ['  2. Contact support to increase limit to 20,000 rows'],
+    ['  3. Export and start fresh sheet (keep old sheet as backup)'],
+    [''],
+    ['Note: This limit is for performance optimization. Without it, the sheet would recalculate'],
+    ['millions of empty rows on every edit, causing significant slowdowns.'],
+    [''],
+    ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'],
+    [''],
     ['⚠️ NEVER DELETE ROWS - Use "Cancelled?" Checkbox Instead'],
     [''],
     ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'],
@@ -2005,10 +2301,10 @@ function createHelpTab(ss) {
     [''],
     ['✅ CORRECT WAY to remove a member:'],
     [''],
-    ['1. Check "Cancelled?" checkbox (column V)'],
-    ['2. Enter "Cancel Date" (column W) - auto-fills when you check box'],
-    ['3. Select "Cancel Reason" (column X) - for analysis'],
-    ['4. Add any notes (column Y)'],
+    ['1. Check "Cancelled?" checkbox (column W)'],
+    ['2. Enter "Cancel Date" (column X) - auto-fills when you check box'],
+    ['3. Select "Cancel Reason" (column Y) - for analysis'],
+    ['4. Add any notes (column Z)'],
     [''],
     ['Benefits of this approach:'],
     ['  • ✅ Preserves all historical data'],
@@ -2139,119 +2435,6 @@ function createHelpTab(ss) {
   Logger.log('✅ Help tab created and auto-hidden (access via Gym Ops → View Help)');
 }
 
-/**
- * Tab 7.1: 📱 Mobile View (UNIFIED - Phase 2.2: Role-based display)
- */
-function createStaffViewTab(ss) {
-  // Rename old tabs if they exist
-  const oldStaffSheet = ss.getSheetByName('📱 Staff View');
-  if (oldStaffSheet) oldStaffSheet.setName('📱 Mobile View');
-  
-  let sheet = ss.getSheetByName('📱 Mobile View');
-  if (!sheet) sheet = ss.insertSheet('📱 Mobile View');
-  sheet.clear();
-  
-  sheet.getRange('A1').setValue('📱 MOBILE VIEW').setFontSize(16).setFontWeight('bold');
-  
-  // Role selector (Phase 2.2)
-  sheet.getRange('A3').setValue('Select Your Role:').setFontWeight('bold');
-  const roleRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['📋 Front Desk (All Leads)', '💰 Sales (Score Sorted)', '📊 Manager (Quick Stats)'], true)
-    .build();
-  sheet.getRange('B3').setDataValidation(roleRule).setValue('📋 Front Desk (All Leads)');
-  
-  // Staff filter
-  sheet.getRange('D3').setValue('Filter by Staff:').setFontWeight('bold');
-  const settingsSheet = ss.getSheetByName('Settings & Budget') || ss.getSheetByName('Settings');
-  const staffList = settingsSheet.getRange('B14:B16').getValues().flat().filter(s => s !== '');
-  const staffRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['All Leads', 'Unassigned', ...staffList], true)
-    .build();
-  sheet.getRange('E3').setDataValidation(staffRule).setValue('All Leads');
-  
-  // Instructions (dynamic based on role)
-  sheet.getRange('A4').setFormula(`
-    =IF(B3="📋 Front Desk (All Leads)", 
-      "💡 Quick data entry - perfect for front desk staff. Filter by staff owner above.",
-      IF(B3="💰 Sales (Score Sorted)",
-        "💡 Leads sorted by score - call 🔥 HOT leads first for best conversion!",
-        "💡 Manager view - key metrics at a glance."
-      )
-    )
-  `).setFontStyle('italic').setFontColor('#0f6938');
-  
-  // Dynamic data display based on role
-  sheet.getRange('A6').setFormula(`
-    =IF(B3="📋 Front Desk (All Leads)",
-      {
-        {"Lead ID", "Name", "Phone", "Email", "Source", "Staff Owner", "Age", "Score", "Action Needed", "Status"};
-        ARRAYFORMULA(
-          IF('Lead Data'!A2:A="","",
-            {'Lead Data'!A2:A, 
-             'Lead Data'!C2:C&" "&'Lead Data'!D2:D,
-             'Lead Data'!E2:E,
-             'Lead Data'!F2:F,
-             'Lead Data'!H2:H,
-             'Lead Data'!J2:J,
-             'Lead Data'!AA2:AA,
-             'Lead Data'!AB2:AB,
-             'Lead Data'!AC2:AC,
-             'Lead Data'!Z2:Z
-            }
-          )
-        )
-      },
-      IF(B3="💰 Sales (Score Sorted)",
-        SORT(
-          {
-            {"Score", "Action", "Name", "Phone", "Email", "Source", "Age", "Appt Date", "Status", "Staff"};
-            ARRAYFORMULA(
-              IF(AND('Lead Data'!A2:A<>"", 'Lead Data'!Q2:Q<>TRUE),"",
-                {'Lead Data'!AB2:AB,
-                 'Lead Data'!AC2:AC,
-                 'Lead Data'!C2:C&" "&'Lead Data'!D2:D,
-                 'Lead Data'!E2:E,
-                 'Lead Data'!F2:F,
-                 'Lead Data'!H2:H,
-                 'Lead Data'!AA2:AA,
-                 'Lead Data'!M2:M,
-                 'Lead Data'!Z2:Z,
-                 'Lead Data'!J2:J
-                }
-              )
-            )
-          },
-          1, TRUE
-        ),
-        {
-          {"Metric", "Today", "This Week", "This Month"};
-          {"New Leads", COUNTIF('Lead Data'!B:B, TODAY()), COUNTIFS('Lead Data'!B:B, ">="&TODAY()-7), COUNTIFS('Lead Data'!B:B, ">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1))};
-          {"Appts Set", COUNTIF('Lead Data'!M:M, TODAY()), COUNTIFS('Lead Data'!M:M, ">="&TODAY()-7), COUNTIFS('Lead Data'!M:M, ">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1))};
-          {"Shows", COUNTIFS('Lead Data'!N:N, TRUE, 'Lead Data'!M:M, TODAY()), COUNTIFS('Lead Data'!N:N, TRUE, 'Lead Data'!M:M, ">="&TODAY()-7), COUNTIFS('Lead Data'!N:N, TRUE, 'Lead Data'!M:M, ">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1))};
-          {"Closes", COUNTIF('Lead Data'!R:R, TODAY()), COUNTIFS('Lead Data'!R:R, ">="&TODAY()-7), COUNTIFS('Lead Data'!R:R, ">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1))}
-        }
-      )
-    )
-  `);
-  
-  sheet.getRange('A6:J6').setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
-  sheet.setColumnWidths(1, 10, 130);
-  sheet.setFrozenRows(6);
-  sheet.setFrozenColumns(2);
-  
-  Logger.log('✅ Mobile View created with role selector (Front Desk | Sales | Manager)');
-}
-
-/**
- * Tab 7.2: 📱 Sales View (DEPRECATED - Merged into Mobile View)
- */
-function createSalesViewTab(ss) {
-  const oldSheet = ss.getSheetByName('📱 Sales View');
-  if (oldSheet) {
-    ss.deleteSheet(oldSheet);
-    Logger.log('✅ Removed old Sales View tab (now in Mobile View with role selector)');
-  }
-}
 
 /**
  * Tab 7.5: LTV Analysis (detailed LTV breakdowns)
@@ -2265,23 +2448,23 @@ function createLTVAnalysisTab(ss) {
   
   // Section 1: LTV by Source (All-Time)
   sheet.getRange('A3').setValue('📊 LTV by Source (All-Time Data)').setFontSize(14).setFontWeight('bold');
-  sheet.getRange('A4').setValue('=QUERY(\'_LTV Calculations\'!N2:U11, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC", 1)');
+  sheet.getRange('A4').setFormula('=QUERY(\'_LTV Calculations\'!N2:U11, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC", 1)');
   
   // Section 2: LTV by Package (All-Time)
   sheet.getRange('A17').setValue('📦 LTV by Package Type (All-Time Data)').setFontSize(14).setFontWeight('bold');
-  sheet.getRange('A18').setValue('=QUERY(\'_LTV Calculations\'!W2:AD6, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC", 1)');
+  sheet.getRange('A18').setFormula('=QUERY(\'_LTV Calculations\'!W2:AD6, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC", 1)');
   
   // Section 3: Monthly Churn Rate Trend
   sheet.getRange('A30').setValue('📉 Monthly Churn Rate (Last 12 Months)').setFontSize(14).setFontWeight('bold');
-  sheet.getRange('A31').setValue('=QUERY(\'_LTV Calculations\'!A15:D27, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
+  sheet.getRange('A31').setFormula('=QUERY(\'_LTV Calculations\'!A15:D27, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
   
   // Section 4: Cohort Analysis - Monthly
   sheet.getRange('F30').setValue('📅 Cohort Analysis - Monthly (Last 12 Months)').setFontSize(14).setFontWeight('bold');
-  sheet.getRange('F31').setValue('=QUERY(\'_LTV Calculations\'!F15:K27, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
+  sheet.getRange('F31').setFormula('=QUERY(\'_LTV Calculations\'!F15:K27, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
   
   // Section 5: Cohort Analysis - Quarterly
   sheet.getRange('M30').setValue('📅 Cohort Analysis - Quarterly (Last 8 Quarters)').setFontSize(14).setFontWeight('bold');
-  sheet.getRange('M31').setValue('=QUERY(\'_LTV Calculations\'!M15:R23, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
+  sheet.getRange('M31').setFormula('=QUERY(\'_LTV Calculations\'!M15:R23, "SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC", 1)');
   
   // Instructions
   sheet.getRange('A47').setValue('💡 HOW TO USE THIS TAB').setFontSize(14).setFontWeight('bold');
@@ -2404,8 +2587,10 @@ function createImportMembersTab(ss) {
 function createUTMTrackingTab(ss) {
   let sheet = ss.getSheetByName('_UTM Tracking');
   if (!sheet) sheet = ss.insertSheet('_UTM Tracking');
-  else if (sheet.getLastRow() > 1) return;
-  else sheet.clear();
+  else if (sheet.getLastRow() > 1) {
+    Logger.log('ℹ️ _UTM Tracking tab already contains data; skipping reset.');
+    return;
+  } else sheet.clear();
   
   const headers = [[
     'Lead ID', 'Date Created', 'UTM Source', 'UTM Medium', 'UTM Campaign',
@@ -2415,11 +2600,11 @@ function createUTMTrackingTab(ss) {
   
   sheet.getRange('A1:O1').setValues(headers).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
-  // O2: Standardized Source (auto-mapped) - CRITICAL FIX #2: Enhanced with better fallback logic - HIGH FIX #4: Bounded to 5000 rows
-  sheet.getRange('O2').setFormula(`=ARRAYFORMULA(IF(A2:A5000="","",
-    IF(C2:C5000="","⚠️ No UTM",
+  // O2: Standardized Source (auto-mapped) - CRITICAL FIX #2: Enhanced with better fallback logic - HIGH FIX #7: Increased to 10K rows - HIGH FIX #7: Case-insensitive mapping
+  sheet.getRange('O2').setFormula(`=ARRAYFORMULA(IF(A2:A10000="","",
+    IF(C2:C10000="","⚠️ No UTM",
       IFERROR(
-        VLOOKUP(LOWER(C2:C5000),'Settings & Budget'!$G$3:$H$100,2,FALSE),
+        VLOOKUP(LOWER(C2:C10000),ARRAYFORMULA({LOWER('Settings & Budget'!$G$3:$G$100),'Settings & Budget'!$H$3:$H$100}),2,FALSE),
         "⚠️ Unmapped"
       )
     )
@@ -2441,11 +2626,48 @@ function createDailySpendTab(ss) {
   
   const headers = [['Date', 'Source', 'Daily Spend ($)']]; // ✅ SIMPLIFIED: Removed Location column
   sheet.getRange('A1:C1').setValues(headers).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
-  
-  sheet.getRange('A2').setValue('Run "Gym Ops → Generate Daily Spend" to populate this tab from Settings & Budget monthly budgets.');
-  
+  sheet.getRange('A2').setValue('This tab auto-calculates from Settings & Budget monthly budgets. Do not edit manually.');
+  sheet.getRange('A3').setFormula(`=
+LET(
+  data,FILTER('Settings & Budget'!A40:E,'Settings & Budget'!A40:A<>""),
+  monthsRaw,INDEX(data,,1),
+  sources,INDEX(data,,2),
+  budgets,INDEX(data,,3),
+  days,INDEX(data,,4),
+  rates,INDEX(data,,5),
+  monthDates,
+    BYROW(monthsRaw,
+      LAMBDA(cell,
+        IF(cell="",NA(),
+          IF(TYPE(cell)=64,
+            DATE(VALUE(LEFT(cell,4)), VALUE(MID(cell,6,2)), 1),
+            cell
+          )
+        )
+      )
+    ),
+  validMask,
+    (sources<>"")*(budgets<>"")*(budgets<>0)*(days<>"")*(days<>0)*(rates<>"")*(rates<>0)*(NOT(ISNA(monthDates))),
+  validMonths,FILTER(monthDates,validMask),
+  validSources,FILTER(sources,validMask),
+  validRates,FILTER(rates,validMask),
+  validDays,FILTER(days,validMask),
+  IF(COUNTA(validMonths)=0,{"","",""},
+    LET(
+      monthEnds,SCAN(0,validDays,LAMBDA(acc,val,acc+val)),
+      totalDays,INDEX(monthEnds,ROWS(monthEnds)),
+      seq,SEQUENCE(totalDays),
+      monthIndex,MATCH(seq,monthEnds),
+      priorEnd,IF(monthIndex=1,0,INDEX(monthEnds,monthIndex-1)),
+      startDate,INDEX(validMonths,monthIndex),
+      calcDate,startDate+(seq-priorEnd)-1,
+      HSTACK(calcDate,INDEX(validSources,monthIndex),INDEX(validRates,monthIndex))
+    )
+  )
+)`);
   sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd');
-  sheet.getRange('C:C').setNumberFormat('$#,##0.00'); // ✅ Updated column reference (was D)
+  sheet.getRange('C:C').setNumberFormat('$#,##0.00');
+  
   sheet.setColumnWidths(1, 3, 120); // ✅ Only 3 columns now (was 4)
   sheet.setFrozenRows(1);
   sheet.hideSheet();
@@ -2464,8 +2686,7 @@ function createChartDataTab(ss) {
   
   // Get all sources from Settings (single source of truth)
   const chartSettingsSheet = ss.getSheetByName('Settings');
-  const chartSources = chartSettingsSheet ? chartSettingsSheet.getRange('A14:A24').getValues().flat().filter(s => s !== '') : 
-    ['Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 'Member Referral', 'Walk-In'];
+  const chartSources = chartSettingsSheet ? chartSettingsSheet.getRange('A14:A24').getValues().flat().filter(s => s !== '') : DefaultLists.SOURCES;
   
   // Build headers dynamically with all sources
   const headers1 = [['Date', ...chartSources]];
@@ -2488,11 +2709,11 @@ function createChartDataTab(ss) {
   sheet.getRange('A96:B96').setValues(headers2).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
   const stages = [
-    ['Leads', '=COUNTIFS(\'Lead Data\'!B:B,">="&'Settings & Budget'!$B$30,\'Lead Data\'!B:B,"<="&'Settings & Budget'!$B$31)'],
-    ['Appts Set', '=COUNTIFS(\'Lead Data\'!L:L,TRUE,\'Lead Data\'!B:B,">="&'Settings & Budget'!$B$30,\'Lead Data\'!B:B,"<="&'Settings & Budget'!$B$31)'],
-    ['Showed', '=COUNTIFS(\'Lead Data\'!N:N,TRUE,\'Lead Data\'!B:B,">="&'Settings & Budget'!$B$30,\'Lead Data\'!B:B,"<="&'Settings & Budget'!$B$31)'],
-    ['Trials', '=COUNTIFS(\'Lead Data\'!O:O,">="&'Settings & Budget'!$B$30,\'Lead Data\'!O:O,"<="&'Settings & Budget'!$B$31,\'Lead Data\'!O:O,"<>")'],
-    ['Members', '=COUNTIFS(\'Lead Data\'!R:R,">="&'Settings & Budget'!$B$30,\'Lead Data\'!R:R,"<="&'Settings & Budget'!$B$31,\'Lead Data\'!Q:Q,TRUE)']
+    ['Leads', `=COUNTIFS('Lead Data'!B:B,">="&'Settings & Budget'!$B$30,'Lead Data'!B:B,"<="&'Settings & Budget'!$B$31)`],
+    ['Appts Set', `=COUNTIFS('Lead Data'!L:L,TRUE,'Lead Data'!B:B,">="&'Settings & Budget'!$B$30,'Lead Data'!B:B,"<="&'Settings & Budget'!$B$31)`],
+    ['Showed', `=COUNTIFS('Lead Data'!N:N,TRUE,'Lead Data'!B:B,">="&'Settings & Budget'!$B$30,'Lead Data'!B:B,"<="&'Settings & Budget'!$B$31)`],
+    ['Trials', `=COUNTIFS('Lead Data'!Q:Q,">="&'Settings & Budget'!$B$30,'Lead Data'!Q:Q,"<="&'Settings & Budget'!$B$31,'Lead Data'!Q:Q,"<>")`],
+    ['Members', `=COUNTIFS('Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31,'Lead Data'!S:S,TRUE)`]
   ];
   stages.forEach((stage, idx) => {
     sheet.getRange(97 + idx, 1).setValue(stage[0]);
@@ -2510,8 +2731,8 @@ function createChartDataTab(ss) {
     const weekEnd = `=D${row}+6`;
     
     sheet.getRange(row, 4).setFormula(weekStart).setNumberFormat('yyyy-mm-dd');
-    sheet.getRange(row, 5).setFormula(`=SUMIFS('Lead Data'!T:T,'Lead Data'!R:R,">="&D${row},'Lead Data'!R:R,"<="&(D${row}+6),'Lead Data'!Q:Q,TRUE)`).setNumberFormat('$#,##0');
-    sheet.getRange(row, 6).setFormula(`=SUMIFS('Lead Data'!U:U,'Lead Data'!R:R,">="&D${row},'Lead Data'!R:R,"<="&(D${row}+6),'Lead Data'!Q:Q,TRUE)`).setNumberFormat('$#,##0');
+    sheet.getRange(row, 5).setFormula(`=SUMIFS('Lead Data'!V:V,'Lead Data'!T:T,">="&D${row},'Lead Data'!T:T,"<="&(D${row}+6),'Lead Data'!S:S,TRUE)`).setNumberFormat('$#,##0');
+    sheet.getRange(row, 6).setFormula(`=SUMIFS('Lead Data'!W:W,'Lead Data'!T:T,">="&D${row},'Lead Data'!T:T,"<="&(D${row}+6),'Lead Data'!S:S,TRUE)`).setNumberFormat('$#,##0');
     sheet.getRange(row, 7).setFormula(`=E${row}+F${row}`).setNumberFormat('$#,##0');
   }
   
@@ -2525,7 +2746,30 @@ function createChartDataTab(ss) {
     const row = 97 + idx;
     sheet.getRange(row, 9).setValue(source);
     // CRITICAL FIX #3: Enhanced CAC calculation for charts
-    sheet.getRange(row, 10).setFormula(`=LET(spend,SUMIFS('_Daily Spend'!C:C,'_Daily Spend'!B:B,"${source}",'_Daily Spend'!A:A,">="&'Settings & Budget'!$B$30,'_Daily Spend'!A:A,"<="&'Settings & Budget'!$B$31),members,COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31,'Lead Data'!Q:Q,TRUE),IF(members=0,IF(spend>0,"Spend/0","-"),spend/members))`).setNumberFormat('$#,##0');
+    sheet.getRange(row, 10).setFormula(`=LET(
+      startDate,'Settings & Budget'!$B$30,
+      endDate,'Settings & Budget'!$B$31,
+      rawMonths,'Settings & Budget'!$A$40:$A$100,
+      sources,'Settings & Budget'!$B$40:$B$100,
+      rates,'Settings & Budget'!$E$40:$E$100,
+      monthStarts,ARRAYFORMULA(IF(rawMonths="",,IF(ISNUMBER(rawMonths),DATE(YEAR(rawMonths),MONTH(rawMonths),1),DATE(VALUE(LEFT(rawMonths,4)),VALUE(MID(rawMonths,6,2)),1)))),
+      monthEnds,ARRAYFORMULA(IF(monthStarts="",,EOMONTH(monthStarts,0))),
+      spend,IFERROR(SUM(BYROW(FILTER({monthStarts,monthEnds,sources,rates},(sources="${source}")*(rates<>"")*(monthStarts<>"")*(monthEnds>=startDate)*(monthStarts<=endDate)),
+        LAMBDA(row,
+          LET(
+            mStart,INDEX(row,1),
+            mEnd,INDEX(row,2),
+            rate,INDEX(row,4),
+            overlapStart,MAX(mStart,startDate),
+            overlapEnd,MIN(mEnd,endDate),
+            days,MAX(0,overlapEnd-overlapStart+1),
+            days*rate
+          )
+        )
+      )),0),
+      members,COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31,'Lead Data'!S:S,TRUE),
+      IF(members=0,IF(spend>0,"Spend/0","-"),spend/members)
+    )`).setNumberFormat('$#,##0');
   });
   
   // Section 5: Monthly New Members vs Target (last 12 months)
@@ -2536,7 +2780,7 @@ function createChartDataTab(ss) {
   for (let i = 11; i >= 0; i--) {
     const row = 108 - i;
     sheet.getRange(row, 12).setFormula(`=DATE(YEAR(TODAY()),MONTH(TODAY())-${i},1)`).setNumberFormat('mmm yyyy');
-    sheet.getRange(row, 13).setFormula(`=COUNTIFS('Lead Data'!R:R,">="&L${row},'Lead Data'!R:R,"<"&EOMONTH(L${row},0)+1,'Lead Data'!Q:Q,TRUE)`);
+    sheet.getRange(row, 13).setFormula(`=COUNTIFS('Lead Data'!T:T,">="&L${row},'Lead Data'!T:T,"<"&EOMONTH(L${row},0)+1,'Lead Data'!S:S,TRUE)`);
     sheet.getRange(row, 14).setFormula('=Settings!$B$7'); // Target from Settings
   }
   
@@ -2562,11 +2806,11 @@ function createChartDataTab(ss) {
     const row = 97 + idx;
     sheet.getRange(row, 19).setValue(source);
     // CAC - CRITICAL FIX #3: Enhanced calculation
-    sheet.getRange(row, 20).setFormula(`=LET(spend,SUMIFS('_Daily Spend'!C:C,'_Daily Spend'!B:B,"${source}",'_Daily Spend'!A:A,">="&'Settings & Budget'!$B$30,'_Daily Spend'!A:A,"<="&'Settings & Budget'!$B$31),members,COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31,'Lead Data'!Q:Q,TRUE),IF(members=0,IF(spend>0,"Spend/0","-"),spend/members))`).setNumberFormat('$#,##0');
+    sheet.getRange(row, 20).setFormula(`=LET(spend,SUMIFS('_Daily Spend'!C:C,'_Daily Spend'!B:B,"${source}",'_Daily Spend'!A:A,">="&'Settings & Budget'!$B$30,'_Daily Spend'!A:A,"<="&'Settings & Budget'!$B$31),members,COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31,'Lead Data'!S:S,TRUE),IF(members=0,IF(spend>0,"Spend/0","-"),spend/members))`).setNumberFormat('$#,##0');
     // Lead Volume
     sheet.getRange(row, 21).setFormula(`=COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!B:B,">="&'Settings & Budget'!$B$30,'Lead Data'!B:B,"<="&'Settings & Budget'!$B$31)`);
     // Close Rate
-    sheet.getRange(row, 22).setFormula(`=IFERROR(COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!Q:Q,TRUE,'Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31)/U${row},0)`).setNumberFormat('0.0%');
+    sheet.getRange(row, 22).setFormula(`=IFERROR(COUNTIFS('Lead Data'!H:H,"${source}",'Lead Data'!S:S,TRUE,'Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31)/U${row},0)`).setNumberFormat('0.0%');
   });
   
   sheet.setColumnWidths(1, 22, 120);
@@ -2587,7 +2831,7 @@ function createDataTab(ss) {
   for (let i = 89; i >= 0; i--) {
     const row = 92 - i;
     sheet.getRange(row, 1).setFormula(`=TODAY()-${i}`).setNumberFormat('yyyy-mm-dd');
-    sheet.getRange(row, 2).setFormula(`=COUNTIFS('Lead Data'!R:R,"<="&A${row},'Lead Data'!Q:Q,TRUE)-COUNTIFS('Lead Data'!W:W,"<="&A${row},'Lead Data'!V:V,TRUE)`);
+    sheet.getRange(row, 2).setFormula(`=COUNTIFS('Lead Data'!T:T,"<="&A${row},'Lead Data'!S:S,TRUE)-COUNTIFS('Lead Data'!Y:Y,"<="&A${row},'Lead Data'!X:X,TRUE)`);
   }
   
   sheet.hideSheet();
@@ -2610,44 +2854,63 @@ function createMetricsTab(ss) {
   sheet.getRange('A4:E4').setValues(headers).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
   // Get membership types from Settings & Budget
-  const membershipTypes = ['PT', 'Small Group', 'General', 'Class Pack'];
-  
+  const settingsSheet = ss.getSheetByName('Settings & Budget');
+  let membershipTypes = [];
+  if (settingsSheet) {
+    membershipTypes = settingsSheet
+      .getRange('D14:D100')
+      .getValues()
+      .flat()
+      .map(value => (value ? value.toString().trim() : ''))
+      .filter(Boolean);
+  }
+
+  if (membershipTypes.length === 0) {
+    sheet.getRange('A5:E5').setValues([['No membership types configured', 0, 0, 0, '—']]);
+    sheet.getRange('A9:E9').setValues([['All Types', 0, 0, 0, '—']]);
+    sheet.getRange('B5:D5').setNumberFormat('0');
+    sheet.getRange('B9:D9').setNumberFormat('0');
+    sheet.getRange('E5:E5').setNumberFormat('@');
+    sheet.getRange('E9:E9').setNumberFormat('@');
+    sheet.hideSheet();
+    Logger.log('⚠️ _Metrics tab initialized with placeholder data (no membership types configured).');
+    return;
+  }
+
   // Create formulas for each membership type
   membershipTypes.forEach((type, idx) => {
     const row = idx + 5;
-    
-    // A: Membership Type
+
     sheet.getRange(row, 1).setValue(type);
-    
-    // B: Gains = COUNT where Member Start (R/col 18) is in range AND Membership Type (S/col 19) matches
     sheet.getRange(row, 2).setFormula(
-      `=COUNTIFS('Lead Data'!R:R,">="&'Settings & Budget'!$B$30,'Lead Data'!R:R,"<="&'Settings & Budget'!$B$31,'Lead Data'!S:S,"${type}",'Lead Data'!Q:Q,TRUE)`
+      `=COUNTIFS('Lead Data'!T:T,">="&'Settings & Budget'!$B$30,'Lead Data'!T:T,"<="&'Settings & Budget'!$B$31,'Lead Data'!U:U,"${type}",'Lead Data'!S:S,TRUE,'Lead Data'!A:A,"<>" )`
     );
-    
-    // C: Losses = COUNT where Cancel Date (W/col 23) is in range AND Membership Type (S/col 19) matches
     sheet.getRange(row, 3).setFormula(
-      `=COUNTIFS('Lead Data'!W:W,">="&'Settings & Budget'!$B$30,'Lead Data'!W:W,"<="&'Settings & Budget'!$B$31,'Lead Data'!S:S,"${type}",'Lead Data'!V:V,TRUE)`
+      `=COUNTIFS('Lead Data'!Y:Y,">="&'Settings & Budget'!$B$30,'Lead Data'!Y:Y,"<="&'Settings & Budget'!$B$31,'Lead Data'!U:U,"${type}",'Lead Data'!X:X,TRUE,'Lead Data'!A:A,"<>" )`
     );
-    
-    // D: Net = Gains - Losses
     sheet.getRange(row, 4).setFormula(`=B${row}-C${row}`);
-    
-    // E: % Change = Net / (Active Members of this type at start of period)
-    // For simplicity, we'll calculate: Net / MAX(Losses, 1) to avoid divide by zero
-    sheet.getRange(row, 5).setFormula(`=IF(C${row}=0,IF(B${row}=0,"—","+∞"),B${row}/C${row}-1)`);
+    sheet.getRange(row, 5).setFormula(
+      `=LET(gain,B${row},loss,C${row},total,gain+loss,IF(total=0,"—",(gain-loss)/MAX(loss,1)))`
+    );
   });
   
   // Add "All Types" rollup row
-  const rollupRow = 9;
+  const firstDataRow = 5;
+  const lastDataRow = firstDataRow + membershipTypes.length - 1;
+  const rollupRow = lastDataRow + 1;
   sheet.getRange(rollupRow, 1).setValue('All Types').setFontWeight('bold');
-  sheet.getRange(rollupRow, 2).setFormula('=SUM(B5:B8)').setFontWeight('bold');
-  sheet.getRange(rollupRow, 3).setFormula('=SUM(C5:C8)').setFontWeight('bold');
-  sheet.getRange(rollupRow, 4).setFormula('=SUM(D5:D8)').setFontWeight('bold');
-  sheet.getRange(rollupRow, 5).setFormula('=IF(C9=0,IF(B9=0,"—","+∞"),B9/C9-1)').setFontWeight('bold');
+  sheet.getRange(rollupRow, 2).setFormula(`=SUM(B${firstDataRow}:B${lastDataRow})`).setFontWeight('bold');
+  sheet.getRange(rollupRow, 3).setFormula(`=SUM(C${firstDataRow}:C${lastDataRow})`).setFontWeight('bold');
+  sheet.getRange(rollupRow, 4).setFormula(`=SUM(D${firstDataRow}:D${lastDataRow})`).setFontWeight('bold');
+  sheet.getRange(rollupRow, 5).setFormula(
+    `=LET(gain,B${rollupRow},loss,C${rollupRow},IF(gain+loss=0,"—",(gain-loss)/MAX(loss,1)))`
+  ).setFontWeight('bold');
   
   // Formatting
-  sheet.getRange('B5:D9').setNumberFormat('0'); // Integer counts
-  sheet.getRange('E5:E9').setNumberFormat('0.0%'); // Percentage
+  sheet.getRange(firstDataRow, 2, membershipTypes.length, 3).setNumberFormat('0'); // Gains/Losses/Net
+  sheet.getRange(firstDataRow, 5, membershipTypes.length, 1).setNumberFormat('0.0%');
+  sheet.getRange(rollupRow, 2, 1, 3).setNumberFormat('0');
+  sheet.getRange(rollupRow, 5).setNumberFormat('0.0%');
   
   // Conditional formatting for Net column (D)
   const positiveNetRule = SpreadsheetApp.newConditionalFormatRule()
@@ -2691,10 +2954,55 @@ function createLTVCalculationsTab(ss) {
   sheet.getRange('A2:L2').setValues(headers1).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
   // This will be populated by a query combining Import Members and converted leads from Lead Data
-  const combinedMembersFormula = '=QUERY({' +
-    'QUERY(\'Import Members\'!A4:L500, "SELECT Col8, Col1, Col2&\' \'&Col3, Col4, Col5, Col6, Col7, Col8, Col11, Col12, Col4, Col4 WHERE Col1 IS NOT NULL", 0);' +
-    'QUERY(\'Lead Data\'!A2:Z5000, "SELECT Col8, Col1, Col3&\' \'&Col4, Col18, Col19, Col20, Col7, Col23, Col4, Col20*12, Col4, Col4 WHERE Col17=TRUE", 0)' +
-    '}, "SELECT * WHERE Col1 IS NOT NULL", 0)';
+  // FIXED: Updated to new Trial Start column structure (AH instead of AG, T instead of R for Member Start)
+  const combinedMembersFormula = `=LET(
+    importRows,FILTER('Import Members'!A4:L,'Import Members'!A4:A<>""),
+    leadRows,FILTER('Lead Data'!A2:AH,'Lead Data'!T2:T<>""),
+    importCount,ROWS(importRows),
+    leadCount,ROWS(leadRows),
+    importBlock,IF(importCount=0,{},MAKEARRAY(importCount,12,LAMBDA(r,c,
+      CHOOSE(c,
+        "Imported",
+        INDEX(importRows,r,1),
+        INDEX(importRows,r,2)&" "&INDEX(importRows,r,3),
+        INDEX(importRows,r,4),
+        INDEX(importRows,r,5),
+        INDEX(importRows,r,6),
+        INDEX(importRows,r,7),
+        INDEX(importRows,r,8),
+        INDEX(importRows,r,11),
+        INDEX(importRows,r,12),
+        INDEX(importRows,r,4),
+        INDEX(importRows,r,4)
+      )
+    ))),
+    leadBlock,IF(leadCount=0,{},MAKEARRAY(leadCount,12,LAMBDA(r,c,
+      LET(
+        joinDate,INDEX(leadRows,r,20),
+        cancelled,INDEX(leadRows,r,24),
+        cancelDate,INDEX(leadRows,r,25),
+        status,IF(cancelled,"Cancelled","Active"),
+        lifespan,IF(joinDate="","",IF(cancelled,IF(cancelDate="","",DATEDIF(joinDate,cancelDate,"M")),DATEDIF(joinDate,TODAY(),"M"))),
+        mrr,INDEX(leadRows,r,22),
+        ltv,IF(OR(mrr="",lifespan=""),"",mrr*lifespan),
+        CHOOSE(c,
+          INDEX(leadRows,r,8),
+          INDEX(leadRows,r,1),
+          INDEX(leadRows,r,3)&" "&INDEX(leadRows,r,4),
+          joinDate,
+          INDEX(leadRows,r,21),
+          mrr,
+          status,
+          cancelDate,
+          lifespan,
+          ltv,
+          joinDate,
+          joinDate
+        )
+      )
+    ))),
+    IF(importCount+leadCount=0,{""},IF(importCount=0,leadBlock,IF(leadCount=0,importBlock,VSTACK(importBlock,leadBlock))))
+  )`;
   sheet.getRange('A3').setFormula(combinedMembersFormula).setNote('Combines Import Members + Converted members from Lead Data');
   
   // Section 2: LTV by Source (All-Time) - using all sources from Settings
@@ -2704,8 +3012,7 @@ function createLTVCalculationsTab(ss) {
   
   // Pull all 11 sources from Settings & Budget (single source of truth)
   const settingsSheet = ss.getSheetByName('Settings & Budget');
-  const allSources = settingsSheet ? settingsSheet.getRange('A14:A24').getValues().flat().filter(s => s !== '') : 
-    ['Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 'Member Referral', 'Walk-In'];
+  const allSources = settingsSheet ? settingsSheet.getRange('A14:A24').getValues().flat().filter(s => s !== '') : DefaultLists.SOURCES;
   
   allSources.forEach((source, idx) => {
     const row = idx + 3;
@@ -2728,7 +3035,7 @@ function createLTVCalculationsTab(ss) {
   const headers3 = [['Package', 'Total Members', 'Active', 'Cancelled', 'Avg Lifespan', 'Avg MRR', 'Avg LTV', 'Actual Churn %']];
   sheet.getRange('W2:AD2').setValues(headers3).setFontWeight('bold').setBackground('#4285f4').setFontColor('#fff');
   
-  const packages = ['PT', 'Small Group', 'General', 'Class Pack'];
+  const packages = DefaultLists.MEMBERSHIP_TYPES;
   packages.forEach((pkg, idx) => {
     const row = idx + 3;
     sheet.getRange(row, 23).setValue(pkg); // W column
@@ -2935,6 +3242,18 @@ function createNamedRanges(ss) {
     ss.setNamedRange('rngStart', settings.getRange('B30'));
     ss.setNamedRange('rngEnd', settings.getRange('B31'));
     
+    // Target value named ranges (CRITICAL: Prevents formula reference errors)
+    // These ensure DASHBOARD formulas always reference data rows, not headers
+    ss.setNamedRange('Target_Leads', settings.getRange('B3'));
+    ss.setNamedRange('Target_SetRate', settings.getRange('B4'));
+    ss.setNamedRange('Target_ShowRate', settings.getRange('B5'));
+    ss.setNamedRange('Target_CloseRate', settings.getRange('B6'));
+    ss.setNamedRange('Target_NewMembers', settings.getRange('B7'));
+    ss.setNamedRange('Target_MRR', settings.getRange('B8'));
+    ss.setNamedRange('Target_CAC', settings.getRange('B9'));
+    ss.setNamedRange('Target_MonthlyChurn', settings.getRange('B10'));
+    ss.setNamedRange('Target_ARPU', settings.getRange('B11'));
+    
     // Membership Type list (D14:D17 - 4 types: PT, Small Group, General, Class Pack)
     ss.setNamedRange('MembershipTypes', settings.getRange('D14:D17'));
     
@@ -2942,43 +3261,81 @@ function createNamedRanges(ss) {
     // Create a reference range in Settings for allowed status values
     ss.setNamedRange('StatusValues', settings.getRange('G14:G19'));
     
-    Logger.log('✅ Named ranges created: rngStart, rngEnd, MembershipTypes, StatusValues');
+    Logger.log('✅ Named ranges created: rngStart, rngEnd, 9 Target ranges, MembershipTypes, StatusValues');
   } catch (e) {
     Logger.log('Named ranges error: ' + e);
   }
 }
 
+function getSourceOptions(settingsSheet) {
+  if (!settingsSheet) return [];
+
+  const sourceColumnValues = settingsSheet.getRange('A14:A').getDisplayValues().flat();
+  const sources = [];
+
+  for (let i = 0; i < sourceColumnValues.length; i++) {
+    const rawValue = sourceColumnValues[i];
+    const value = rawValue ? rawValue.toString().trim() : '';
+
+    if (!value) {
+      continue;
+    }
+
+    if (value.indexOf('━━━━━━━━') >= 0 || value.startsWith('📅 ') || value.startsWith('💰 ')) {
+      break;
+    }
+
+    sources.push(value);
+  }
+
+  return sources;
+}
+
 function setupDataValidations(ss) {
   const leadData = ss.getSheetByName('Lead Data');
   const settings = ss.getSheetByName('Settings & Budget');
-  const marketing = ss.getSheetByName('Marketing');
+  if (!leadData || !settings) {
+    return;
+  }
   
-  if (!leadData || !settings) return;
-  
-  const sourceRange = settings.getRange('A14:A100');
   const staffRange = settings.getRange('B14:B100');
   const locationRange = settings.getRange('C14:C100');
   const typeRange = settings.getRange('D14:D100');
   const reasonRange = settings.getRange('E14:E100');
   
   // CRITICAL FIX #2: Source (H) data validation - auto-filled formula, but users can override by selecting from dropdown
-  leadData.getRange('H2:H5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(sourceRange, true).setAllowInvalid(true).build());
+  const sourceOptions = getSourceOptions(settings);
+  if (sourceOptions.length) {
+    const leadSourceValidation = SpreadsheetApp.newDataValidation().requireValueInList(sourceOptions, true).setAllowInvalid(true).build();
+    leadData.getRange('H2:H').setDataValidation(leadSourceValidation);
+  }
   
-  leadData.getRange('J2:J5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(staffRange, true).build()); // Staff
-  leadData.getRange('K2:K5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(locationRange, true).build()); // Location
-  leadData.getRange('S2:S5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(typeRange, true).build()); // Membership Type
-  leadData.getRange('X2:X5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(reasonRange, true).build()); // Cancel Reason
+  leadData.getRange('J2:J').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(staffRange, true).build()); // Staff
+  leadData.getRange('K2:K').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(locationRange, true).build()); // Location
+  leadData.getRange('S2:S').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(typeRange, true).build()); // Membership Type
+  leadData.getRange('Y2:Y').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(reasonRange, true).build()); // Cancel Reason
   
   const checkbox = SpreadsheetApp.newDataValidation().requireCheckbox().build();
-  leadData.getRange('L2:L5000').setDataValidation(checkbox); // Appt Set?
-  leadData.getRange('N2:N5000').setDataValidation(checkbox); // Show?
-  leadData.getRange('O2:O5000').setDataValidation(checkbox); // Start Trial? (converts to date on check)
-  leadData.getRange('Q2:Q5000').setDataValidation(checkbox); // Converted?
-  leadData.getRange('V2:V5000').setDataValidation(checkbox); // Cancelled?
+  leadData.getRange('L2:L').setDataValidation(checkbox); // Appt Set?
+  leadData.getRange('N2:N').setDataValidation(checkbox); // Show?
+  leadData.getRange('P2:P').setDataValidation(checkbox); // Start Trial? (checkbox)
+  leadData.getRange('S2:S').setDataValidation(checkbox); // Converted?
+  leadData.getRange('X2:X').setDataValidation(checkbox); // Cancelled?
+  
+  // Date validation for date columns (NOT checkboxes)
+  const dateValidation = SpreadsheetApp.newDataValidation()
+    .requireDate()
+    .requireDateBetween(new Date(2020, 0, 1), new Date(2030, 11, 31))
+    .setAllowInvalid(false)
+    .setHelpText('📅 Enter a valid date (YYYY-MM-DD)')
+    .build();
+  leadData.getRange('Q2:Q').setDataValidation(dateValidation); // Trial Start (DATE column)
   
   if (marketing) {
-    marketing.getRange('B3:B5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(sourceRange, true).build());
-    marketing.getRange('C3:C5000').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(locationRange, true).build());
+    if (sourceOptions.length) {
+      marketing.getRange('B3:B').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(sourceOptions, true).build());
+    }
+    marketing.getRange('C3:C').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(locationRange, true).build());
   }
 }
 
@@ -2992,7 +3349,7 @@ function applyProtections(ss) {
     // Protect auto-calculated columns (warning mode)
     if (leadData) {
       protectColumn(leadData, 'H', 'Source (auto from UTM)');
-      protectColumn(leadData, 'P', 'Trial End (auto)');
+      protectColumn(leadData, 'Q', 'Trial End (auto)');
       protectColumn(leadData, 'Z', 'Current Status (auto)');
     }
     
@@ -3018,7 +3375,8 @@ function applyProtections(ss) {
 
 function protectColumn(sheet, column, description) {
   try {
-    const range = sheet.getRange(column + '2:' + column + '5000');
+    const lastRow = sheet.getMaxRows();
+    const range = sheet.getRange(column + '2:' + column + lastRow);
     const protection = range.protect();
     protection.setDescription(description);
     protection.setWarningOnly(true);
@@ -3028,7 +3386,7 @@ function protectColumn(sheet, column, description) {
 }
 
 function reorderTabs(ss) {
-  const order = ['DASHBOARD', 'Lead Data', 'Members', 'Settings', 'Marketing', 'Staff', 'Help', '_UTM Tracking', '_Daily Spend', '_Data'];
+  const order = ['DASHBOARD', 'Lead Data', 'Members', 'Settings & Budget', 'Help', '_UTM Tracking', '_Chart Data', '_LTV Calculations', '_Metrics', '_Data'];
   order.forEach((name, index) => {
     const sheet = ss.getSheetByName(name);
     if (sheet) {
@@ -3038,93 +3396,6 @@ function reorderTabs(ss) {
   });
   const dashboard = ss.getSheetByName('DASHBOARD');
   if (dashboard) ss.setActiveSheet(dashboard);
-}
-
-// ============================================================
-// MONTHLY → DAILY SPEND GENERATOR
-// ============================================================
-
-function generateDailySpend() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-  const settings = ss.getSheetByName('Settings & Budget'); // ✅ UPDATED: Now in Settings & Budget tab
-  const dailySpend = ss.getSheetByName('_Daily Spend');
-  
-  if (!settings || !dailySpend) {
-    ui.alert('Error', 'Settings & Budget or _Daily Spend tab not found', ui.ButtonSet.OK);
-    return;
-  }
-  
-  try {
-    // Clear existing data
-    if (dailySpend.getLastRow() > 1) {
-      dailySpend.getRange(2, 1, dailySpend.getLastRow() - 1, 3).clear(); // ✅ UPDATED: Only 3 columns now
-    }
-    
-    // Get monthly budget data (starting from row 40)
-    const lastRow = settings.getLastRow();
-    if (lastRow < 40) {
-      ui.alert('⚠️ No Data', 'No monthly budgets found in Settings & Budget tab (row 40+).\n\nTo add budgets:\n1. Go to Settings & Budget tab\n2. Scroll to row 40+\n3. Enter: Month (YYYY-MM), Source, Monthly Budget', ui.ButtonSet.OK);
-      return;
-    }
-    
-    const data = settings.getRange(40, 1, lastRow - 39, 5).getValues(); // ✅ Read from row 40, columns A-E
-    const dailyRows = [];
-    let validRowsFound = 0;
-    
-    for (let i = 0; i < data.length; i++) {
-      if (!data[i][0]) continue; // Skip empty rows
-      
-      const month = data[i][0]; // "2025-01" or Date object
-      const source = data[i][1];
-      const monthlyBudget = data[i][2]; // ✅ UPDATED: Column C (was D)
-      const daysInMonth = data[i][3]; // ✅ UPDATED: Column D (was E) - may be formula result
-      const dailyRate = data[i][4]; // ✅ UPDATED: Column E (was F) - may be formula result
-      
-      // Skip if essential data is missing or formula hasn't calculated
-      if (!month || !source || !monthlyBudget || monthlyBudget === 0) continue;
-      if (!daysInMonth || daysInMonth === "" || daysInMonth === 0) continue;
-      if (!dailyRate || dailyRate === "" || dailyRate === 0) continue;
-      
-      validRowsFound++;
-      
-      // Parse month (handle both string "2025-01" and Date objects)
-      let monthStr = month;
-      if (month instanceof Date) {
-        monthStr = Utilities.formatDate(month, Session.getScriptTimeZone(), 'yyyy-MM');
-      }
-      
-      const monthDate = new Date(monthStr + '-01');
-      const year = monthDate.getFullYear();
-      const monthNum = monthDate.getMonth();
-      
-      // Generate daily rows
-      for (let day = 1; day <= daysInMonth; day++) {
-        const date = new Date(year, monthNum, day);
-        dailyRows.push([date, source, dailyRate]); // ✅ SIMPLIFIED: No location column
-      }
-    }
-    
-    if (dailyRows.length > 0) {
-      dailySpend.getRange(2, 1, dailyRows.length, 3).setValues(dailyRows); // ✅ UPDATED: 3 columns (was 4)
-      ui.alert('✅ Success', `Generated ${dailyRows.length} daily spend rows from ${validRowsFound} monthly budget(s).`, ui.ButtonSet.OK);
-    } else {
-      ui.alert(
-        '⚠️ No Valid Data', 
-        'No valid monthly budgets found in Settings & Budget tab (row 40+).\n\n' +
-        'Make sure columns D and E show calculated values (not empty or zero).\n\n' +
-        'To fix:\n' +
-        '1. Go to Settings & Budget tab\n' +
-        '2. Check row 40+ has: Month, Source, Monthly Budget\n' +
-        '3. Wait for formulas in columns D & E to calculate\n' +
-        '4. Try again', 
-        ui.ButtonSet.OK
-      );
-    }
-    
-  } catch (error) {
-    ui.alert('Error', 'Generation failed: ' + error.toString() + '\n\nPlease check Settings & Budget tab row 40+', ui.ButtonSet.OK);
-  }
 }
 
 // ============================================================
@@ -3451,7 +3722,7 @@ function addSampleData() {
     ui.ButtonSet.YES_NO
   );
   
-  if (confirm !== ui.Button.YES) return;
+  if (confirm !== ui.Button.YES) return false;
   
   try {
     const leadData = ss.getSheetByName('Lead Data');
@@ -3459,19 +3730,19 @@ function addSampleData() {
     
     if (!leadData || !utmTracking) {
       ui.alert('Error', 'Please run "Initialize Template" first.', ui.ButtonSet.OK);
-      return;
+      return false;
     }
     
     // Sample data configuration - using all 11 sources from Settings
-    const sources = ['Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 'Member Referral', 'Walk-In'];
+    const sources = DefaultLists.SOURCES;
     const utmSources = ['google', 'facebook', 'direct', 'organic', 'instagram', 'referral', 'other', 'gohighlevel', 'third-party', 'member_referral', 'walkin'];
     const campaigns = ['spring-promo', 'summer-sale', 'back-to-school', 'new-year', 'organic', '', 'portal', 'api', 'member-program'];
     const firstNames = ['John', 'Sarah', 'Mike', 'Emma', 'David', 'Lisa', 'Chris', 'Anna', 'James', 'Maria', 'Tom', 'Kate', 'Alex', 'Jen', 'Dan'];
     const lastNames = ['Smith', 'Johnson', 'Brown', 'Davis', 'Wilson', 'Moore', 'Taylor', 'Anderson', 'Thomas', 'Jackson', 'White', 'Harris', 'Martin', 'Garcia', 'Lee'];
-    const staff = ['Coach A', 'Coach B', 'Front Desk'];
-    const location = 'Main Location'; // ✅ SIMPLIFIED: Single location
-    const membershipTypes = ['PT', 'Small Group', 'General', 'Class Pack'];
-    const cancelReasons = ['Price', 'Moved', 'Injury', 'Service', 'Location', 'Other'];
+    const staff = DefaultLists.STAFF;
+    const location = DefaultLists.LOCATION; // ✅ SIMPLIFIED: Single location
+    const membershipTypes = DefaultLists.MEMBERSHIP_TYPES;
+    const cancelReasons = DefaultLists.CANCEL_REASONS;
     
     const today = new Date();
     const leadRows = [];
@@ -3483,8 +3754,8 @@ function addSampleData() {
       const daysAgo = Math.floor(Math.random() * 90); // Last 90 days
       const createdDate = new Date(today.getTime() - daysAgo * 24 * 60 * 60 * 1000);
       
-      const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-      const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
+    const firstName = DefaultLists.SAMPLE_FIRST_NAMES[Math.floor(Math.random() * DefaultLists.SAMPLE_FIRST_NAMES.length)];
+    const lastName = DefaultLists.SAMPLE_LAST_NAMES[Math.floor(Math.random() * DefaultLists.SAMPLE_LAST_NAMES.length)];
       const phone = '555-' + String(Math.floor(Math.random() * 900) + 100) + '-' + String(Math.floor(Math.random() * 9000) + 1000);
       const email = firstName.toLowerCase() + '.' + lastName.toLowerCase() + '@example.com';
       
@@ -3495,8 +3766,8 @@ function addSampleData() {
       const sourceIdx = Math.floor(Math.random() * sources.length);
       const source = sources[sourceIdx];
       const campaign = campaigns[Math.floor(Math.random() * campaigns.length)];
-      const staffOwner = staff[Math.floor(Math.random() * staff.length)];
-      // location already defined above as single value ('Main Location')
+    const staffOwner = DefaultLists.STAFF[Math.floor(Math.random() * DefaultLists.STAFF.length)];
+    // location already defined above as single value (DefaultLists.LOCATION)
       
       // Funnel progression (weighted for realism)
       const rand = Math.random();
@@ -3559,13 +3830,13 @@ function addSampleData() {
       leadRows.push(leadRow);
       
       // Build UTM Tracking row (15 columns A-O)
-      const utmSource = utmSources[sourceIdx];
-      const utmRow = [
-        leadId,                                    // A: Lead ID
-        createdDate,                               // B: Date Created
-        utmSource,                                 // C: UTM Source
-        utmSource === 'google' || utmSource === 'facebook' ? 'cpc' : 'organic', // D: UTM Medium
-        campaign,                                  // E: UTM Campaign
+      const utmSource = DefaultLists.SAMPLE_UTM_SOURCES[sourceIdx];
+    const utmRow = [
+      leadId,                                    // A: Lead ID
+      createdDate,                               // B: Date Created
+      utmSource,                                 // C: UTM Source
+      utmSource === 'google' || utmSource === 'facebook' ? 'cpc' : 'organic', // D: UTM Medium
+      campaign,                                  // E: UTM Campaign
         '',                                        // F: UTM Content
         '',                                        // G: Match Type
         '',                                        // H: Campaign ID
@@ -3597,16 +3868,18 @@ function addSampleData() {
       '✅ Sample Data Added!',
       '50 sample leads added successfully.\n\n' +
       'Next steps:\n' +
-      '1. Go to Marketing tab and add monthly budgets\n' +
-      '2. Run "Gym Ops → Generate Daily Spend"\n' +
-      '3. Check DASHBOARD to see metrics and Source Analysis\n\n' +
+      '1. Go to Settings & Budget and add monthly budgets\n' +
+      '2. Check DASHBOARD to see metrics and Source Analysis\n\n' +
       'Note: Source column will auto-fill based on UTM mapping.',
       ui.ButtonSet.OK
     );
+    return true;
     
   } catch (error) {
-    ui.alert('Error', error.toString(), ui.ButtonSet.OK);
-    Logger.log('Sample data error: ' + error.toString());
+    const message = error && error.toString ? error.toString() : 'Unknown error';
+    Logger.log('Sample data error: ' + message);
+    SpreadsheetApp.getUi().alert('Sample Data Error', message + '\n\nSample data was not added. You can retry later from the Gym Ops menu.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return false;
   }
 }
 
@@ -3915,334 +4188,7 @@ function processQuickAddLead(formData) {
 }
 
 // ============================================================
-// DAILY REPORT GENERATOR (UX #5 - PHASE B)
-// ============================================================
-
-/**
- * UX #5: Generate Daily Report - One-click end-of-day summary
- * Creates a comprehensive daily report with key metrics and action items
- */
-function generateDailyReport() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-  const leadData = ss.getSheetByName('Lead Data');
-  
-  if (!leadData) {
-    ui.alert('❌ Error', 'Lead Data tab not found. Run "Initialize Template" first.', ui.ButtonSet.OK);
-    return;
-  }
-  
-  try {
-    const today = new Date();
-    const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'EEEE, MMMM dd, yyyy');
-    
-    // Get all lead data
-    const lastRow = leadData.getLastRow();
-    if (lastRow < 2) {
-      ui.alert('📊 Daily Report', 'No lead data available yet.', ui.ButtonSet.OK);
-      return;
-    }
-    
-    const data = leadData.getRange(2, 1, lastRow - 1, 31).getValues(); // A2:AE (all columns)
-    
-    // Calculate metrics
-    const metrics = calculateDailyMetrics(data, today);
-    
-    // Build report
-    const report = buildDailyReportText(todayStr, metrics, data);
-    
-    // Show report in dialog
-    const htmlOutput = HtmlService.createHtmlOutput(
-      `<html>
-        <head>
-          <base target="_top">
-          <style>
-            body { font-family: 'Courier New', monospace; padding: 20px; white-space: pre-wrap; }
-            h2 { color: #4285f4; }
-            .copy-btn { 
-              position: fixed; 
-              top: 10px; 
-              right: 10px; 
-              padding: 10px 20px; 
-              background: #4285f4; 
-              color: white; 
-              border: none; 
-              border-radius: 4px; 
-              cursor: pointer;
-              font-size: 14px;
-            }
-            .copy-btn:hover { background: #3367d6; }
-          </style>
-        </head>
-        <body>
-          <button class="copy-btn" onclick="copyReport()">📋 Copy to Clipboard</button>
-          <div id="report">${report.replace(/\n/g, '<br>')}</div>
-          <script>
-            function copyReport() {
-              const text = document.getElementById('report').innerText;
-              navigator.clipboard.writeText(text).then(() => {
-                alert('✅ Report copied to clipboard!');
-              });
-            }
-          </script>
-        </body>
-      </html>`
-    )
-    .setWidth(700)
-    .setHeight(600);
-    
-    ui.showModalDialog(htmlOutput, '📊 Daily Report - ' + todayStr);
-    
-  } catch (error) {
-    ui.alert('❌ Error', 'Failed to generate report: ' + error.toString(), ui.ButtonSet.OK);
-    Logger.log('Daily Report Error: ' + error.toString());
-  }
-}
-
-/**
- * Calculate daily metrics from lead data
- */
-function calculateDailyMetrics(data, today) {
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  
-  const last30Days = new Date(today);
-  last30Days.setDate(last30Days.getDate() - 30);
-  
-  const metrics = {
-    // New leads today
-    newLeadsToday: 0,
-    newLeadsYesterday: 0,
-    
-    // Appointments
-    apptsSetToday: 0,
-    apptsShowedToday: 0,
-    
-    // Trials
-    trialsStartedToday: 0,
-    trialsExpiringNext3Days: 0,
-    
-    // Conversions
-    conversionsToday: 0,
-    conversionsLast30Days: 0,
-    
-    // Action items
-    noApptSet24h: [],
-    noShows: [],
-    trialsExpiringSoon: [],
-    
-    // Source breakdown
-    sourceBreakdown: {},
-    
-    // Hot leads
-    hotLeads: 0,
-    
-    // Old leads needing follow-up
-    oldLeads7Plus: 0
-  };
-  
-  data.forEach(row => {
-    const leadId = row[0];
-    const createdDate = row[1];
-    const firstName = row[2];
-    const lastName = row[3];
-    const source = row[7];
-    const apptSet = row[11];
-    const show = row[13];
-    const trialStart = row[14];
-    const trialEnd = row[15];
-    const converted = row[16];
-    const memberStart = row[17];
-    const cancelled = row[21];
-    const age = row[26];
-    const leadScore = row[27];
-    
-    // Skip empty rows
-    if (!leadId) return;
-    
-    // New leads
-    if (createdDate instanceof Date) {
-      if (isSameDay(createdDate, today)) {
-        metrics.newLeadsToday++;
-      }
-      if (isSameDay(createdDate, yesterday)) {
-        metrics.newLeadsYesterday++;
-      }
-    }
-    
-    // Appointments set today
-    if (apptSet instanceof Date && isSameDay(apptSet, today)) {
-      metrics.apptsSetToday++;
-    }
-    
-    // Shows today
-    if (show === true) {
-      // Approximation: if appointment date exists and they showed
-      metrics.apptsShowedToday++;
-    }
-    
-    // Trials started today
-    if (trialStart instanceof Date && isSameDay(trialStart, today)) {
-      metrics.trialsStartedToday++;
-    }
-    
-    // Trials expiring in next 3 days
-    if (trialEnd instanceof Date && !converted && !cancelled) {
-      const daysUntilExpiry = Math.ceil((trialEnd - today) / (1000 * 60 * 60 * 24));
-      if (daysUntilExpiry >= 0 && daysUntilExpiry <= 3) {
-        metrics.trialsExpiringNext3Days++;
-        metrics.trialsExpiringSoon.push(`${firstName} ${lastName}`);
-      }
-    }
-    
-    // Conversions
-    if (converted === true) {
-      if (memberStart instanceof Date && isSameDay(memberStart, today)) {
-        metrics.conversionsToday++;
-      }
-      if (memberStart instanceof Date && memberStart >= last30Days) {
-        metrics.conversionsLast30Days++;
-      }
-    }
-    
-    // Action items: No appt set within 24h
-    if (!apptSet && !converted && !cancelled && createdDate instanceof Date) {
-      const daysSinceCreated = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
-      if (daysSinceCreated >= 1) {
-        metrics.noApptSet24h.push(`${firstName} ${lastName}`);
-      }
-    }
-    
-    // Source breakdown
-    if (source) {
-      metrics.sourceBreakdown[source] = (metrics.sourceBreakdown[source] || 0) + 1;
-    }
-    
-    // Hot leads
-    if (typeof leadScore === 'string' && leadScore.includes('🔥 HOT') && !converted && !cancelled) {
-      metrics.hotLeads++;
-    }
-    
-    // Old leads (7+ days)
-    if (typeof age === 'string' && (age.includes('⚠️') || age.includes('🔴'))) {
-      metrics.oldLeads7Plus++;
-    }
-  });
-  
-  return metrics;
-}
-
-/**
- * Check if two dates are the same day
- */
-function isSameDay(date1, date2) {
-  return date1.getFullYear() === date2.getFullYear() &&
-         date1.getMonth() === date2.getMonth() &&
-         date1.getDate() === date2.getDate();
-}
-
-/**
- * Build the daily report text
- */
-function buildDailyReportText(dateStr, metrics, data) {
-  const lines = [];
-  
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  lines.push('📊 DAILY REPORT - ' + dateStr);
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  lines.push('');
-  
-  // NEW LEADS
-  lines.push('🆕 NEW LEADS');
-  lines.push(`   Today: ${metrics.newLeadsToday}`);
-  lines.push(`   Yesterday: ${metrics.newLeadsYesterday}`);
-  
-  // Top sources
-  if (Object.keys(metrics.sourceBreakdown).length > 0) {
-    const topSources = Object.entries(metrics.sourceBreakdown)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
-    lines.push(`   Top Sources: ${topSources.map(([source, count]) => `${source} (${count})`).join(', ')}`);
-  }
-  
-  if (metrics.hotLeads > 0) {
-    lines.push(`   🔥 Hot: ${metrics.hotLeads} | 🟡 Warm: N/A | 🔵 Cold: N/A`);
-  }
-  lines.push('');
-  
-  // APPOINTMENTS
-  lines.push('📞 APPOINTMENTS');
-  lines.push(`   Set Today: ${metrics.apptsSetToday}`);
-  if (metrics.apptsSetToday > 0) {
-    const setRate = Math.round((metrics.apptsSetToday / Math.max(metrics.newLeadsToday, 1)) * 100);
-    lines.push(`   Set Rate: ${setRate}%`);
-  }
-  lines.push('');
-  
-  // TRIALS
-  lines.push('🎟️ TRIALS');
-  lines.push(`   Started Today: ${metrics.trialsStartedToday}`);
-  lines.push(`   Expiring Soon (3d): ${metrics.trialsExpiringNext3Days}`);
-  if (metrics.trialsExpiringSoon.length > 0) {
-    lines.push(`   🎯 ACTION: Follow up with ${metrics.trialsExpiringSoon.slice(0, 5).join(', ')}${metrics.trialsExpiringSoon.length > 5 ? ` +${metrics.trialsExpiringSoon.length - 5} more` : ''}`);
-  }
-  lines.push('');
-  
-  // CONVERSIONS
-  lines.push('💰 CONVERSIONS');
-  lines.push(`   New Members Today: ${metrics.conversionsToday}`);
-  if (metrics.conversionsToday > 0) {
-    lines.push(`   🎉 Great work! ${metrics.conversionsToday} new member${metrics.conversionsToday > 1 ? 's' : ''}!`);
-  }
-  lines.push(`   Last 30 Days: ${metrics.conversionsLast30Days}`);
-  lines.push('');
-  
-  // ACTION NEEDED
-  lines.push('⚠️ ATTENTION NEEDED');
-  lines.push(`   No Appt Set (24h+): ${metrics.noApptSet24h.length}`);
-  if (metrics.noApptSet24h.length > 0) {
-    lines.push(`   🎯 ACTION: Contact ${metrics.noApptSet24h.slice(0, 5).join(', ')}${metrics.noApptSet24h.length > 5 ? ` +${metrics.noApptSet24h.length - 5} more` : ''}`);
-  }
-  
-  if (metrics.oldLeads7Plus > 0) {
-    lines.push(`   Old Leads (7+ days): ${metrics.oldLeads7Plus}`);
-    lines.push(`   🎯 ACTION: Review and follow up on aging leads`);
-  }
-  lines.push('');
-  
-  // SUMMARY
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  lines.push('📈 SUMMARY');
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  
-  const totalActionItems = metrics.noApptSet24h.length + metrics.trialsExpiringNext3Days;
-  
-  if (metrics.conversionsToday > 0) {
-    lines.push(`✅ Excellent day! ${metrics.conversionsToday} new member${metrics.conversionsToday > 1 ? 's' : ''} joined!`);
-  } else if (metrics.newLeadsToday > 5) {
-    lines.push('✅ Great lead flow today!');
-  } else if (metrics.newLeadsToday > 0) {
-    lines.push('✅ Keep up the good work!');
-  } else {
-    lines.push('⚠️ No new leads today - review marketing!');
-  }
-  
-  if (totalActionItems > 0) {
-    lines.push(`⚠️ ${totalActionItems} action item${totalActionItems > 1 ? 's' : ''} need${totalActionItems === 1 ? 's' : ''} attention`);
-  } else {
-    lines.push('✅ No urgent action items - great job staying on top of leads!');
-  }
-  
-  lines.push('');
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  lines.push('🎯 Keep up the great work! 💪');
-  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  
-  return lines.join('\n');
-}
-
-// ============================================================
-// DARK MODE TOGGLE (LOW FIX #18 - FINAL FIX!)
+// MEMBER FILTERS FEATURE
 // ============================================================
 
 /**
@@ -4298,94 +4244,6 @@ function setupMemberFilters() {
   } catch (error) {
     ui.alert('❌ Error', 'Failed to create filters: ' + error.toString(), ui.ButtonSet.OK);
     Logger.log('setupMemberFilters error: ' + error);
-  }
-}
-
-/**
- * LOW FIX #18: Toggle Dark Mode
- * Switches DASHBOARD between light and dark theme for better viewing in low-light environments
- * This is the FINAL fix to reach 100% completion! 🎉
- */
-function toggleDarkMode() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-  const dashboard = ss.getSheetByName('DASHBOARD');
-  
-  if (!dashboard) {
-    ui.alert('❌ Error', 'DASHBOARD not found. Run "Initialize Template" first.', ui.ButtonSet.OK);
-    return;
-  }
-  
-  try {
-    // Check current background color of A1 to determine current mode
-    const currentBg = dashboard.getRange('A1').getBackground().toLowerCase();
-    const isDarkMode = (currentBg === '#1e1e1e');
-    
-    if (isDarkMode) {
-      // ═══════════════════════════════════════════════════════════
-      // Switch to LIGHT MODE
-      // ═══════════════════════════════════════════════════════════
-      
-      dashboard.setTabColor('#4285f4');  // Blue tab
-      
-      // Reset all content to white background, black text
-      dashboard.getRange('A:Z').setBackground('#ffffff').setFontColor('#000000');
-      
-      // Reset header rows to original blue
-      dashboard.getRange('A6:F6').setBackground('#4285f4').setFontColor('#ffffff');
-      dashboard.getRange('A51:L51').setBackground('#4285f4').setFontColor('#ffffff');
-      dashboard.getRange('A70:G70').setBackground('#4285f4').setFontColor('#ffffff');
-      dashboard.getRange('I70:J70').setBackground('#4285f4').setFontColor('#ffffff');
-      dashboard.getRange('A86:H86').setBackground('#4285f4').setFontColor('#ffffff');
-      
-      // Reset section headers
-      const sectionHeaders = ['A1', 'A5', 'A17', 'A37', 'A50', 'A65', 'A85', 'A95'];
-      sectionHeaders.forEach(cell => {
-        dashboard.getRange(cell).setBackground('#ffffff').setFontColor('#000000');
-      });
-      
-      ui.alert(
-        '☀️ Light Mode Enabled',
-        'DASHBOARD switched to light theme.\n\nTo switch back: Gym Ops → Toggle Dark Mode',
-        ui.ButtonSet.OK
-      );
-      
-    } else {
-      // ═══════════════════════════════════════════════════════════
-      // Switch to DARK MODE
-      // ═══════════════════════════════════════════════════════════
-      
-      dashboard.setTabColor('#2d2d30');  // Dark gray tab
-      
-      // Apply dark background and white text to all content
-      dashboard.getRange('A:Z').setBackground('#1e1e1e').setFontColor('#ffffff');
-      
-      // Update header rows for dark mode (darker gray)
-      dashboard.getRange('A6:F6').setBackground('#2d2d30').setFontColor('#ffffff');
-      dashboard.getRange('A51:L51').setBackground('#2d2d30').setFontColor('#ffffff');
-      dashboard.getRange('A70:G70').setBackground('#2d2d30').setFontColor('#ffffff');
-      dashboard.getRange('I70:J70').setBackground('#2d2d30').setFontColor('#ffffff');
-      dashboard.getRange('A86:H86').setBackground('#2d2d30').setFontColor('#ffffff');
-      
-      // Update section headers (slightly lighter than content for contrast)
-      const sectionHeaders = ['A1', 'A5', 'A17', 'A37', 'A50', 'A65', 'A85', 'A95'];
-      sectionHeaders.forEach(cell => {
-        dashboard.getRange(cell).setBackground('#2d2d30').setFontColor('#ffffff');
-      });
-      
-      ui.alert(
-        '🌙 Dark Mode Enabled',
-        'DASHBOARD switched to dark theme.\n\nBenefits:\n• Reduces eye strain in low light\n• Modern, professional appearance\n• Better for late-night reviews\n\nTo revert: Gym Ops → Toggle Dark Mode',
-        ui.ButtonSet.OK
-      );
-    }
-    
-    Logger.log('Dark mode toggled successfully. New mode: ' + (isDarkMode ? 'Light' : 'Dark'));
-    
-  } catch (error) {
-    ui.alert('❌ Error', `Failed to toggle dark mode: ${error.toString()}\n\nCheck script logs for details.`, ui.ButtonSet.OK);
-    Logger.log('Dark mode toggle error: ' + error.toString());
-    Logger.log('Stack trace: ' + error.stack);
   }
 }
 
@@ -4557,4 +4415,370 @@ function convertArrayToCSV(data) {
       return value;
     }).join(',');
   }).join('\n');
+}
+
+function runHealthCheck() {
+  HealthCheck.run();
+}
+
+function normalizeSettingsTargets(settingsSheet) {
+  const decimalMetrics = [
+    { cell: 'B4', description: 'Set Rate (%)' },
+    { cell: 'B5', description: 'Show Rate (%)' },
+    { cell: 'B6', description: 'Close Rate (%)' },
+    { cell: 'B10', description: 'Monthly Churn (%)' }
+  ];
+  decimalMetrics.forEach(({ cell }) => {
+    const range = settingsSheet.getRange(cell);
+    const value = range.getValue();
+    if (typeof value === 'number' && value > 1) {
+      range.setValue(value / 100);
+    }
+  });
+}
+
+/**
+ * FORMULA AUDIT FIX: Validate Settings & Budget targets exist
+ * Ensures B3-B9 have numeric values (not empty or text)
+ * Added: 2025-10-08 after formula audit identified root cause
+ */
+function validateSettingsTargets(settingsSheet) {
+  const targetCells = [
+    { cell: 'B3', name: 'Leads', default: 200 },
+    { cell: 'B4', name: 'Set Rate (%)', default: 0.60 },
+    { cell: 'B5', name: 'Show Rate (%)', default: 0.70 },
+    { cell: 'B6', name: 'Close Rate (%)', default: 0.50 },
+    { cell: 'B7', name: 'New Members', default: 42 },
+    { cell: 'B8', name: 'MRR ($)', default: 4500 },
+    { cell: 'B9', name: 'CAC ($)', default: 150 }
+  ];
+  
+  let fixed = false;
+  targetCells.forEach(({ cell, name, default: defaultVal }) => {
+    const range = settingsSheet.getRange(cell);
+    const value = range.getValue();
+    
+    // If empty or text, set default
+    if (value === '' || value === null || value === undefined || typeof value !== 'number') {
+      Logger.log(`⚠️ ${name} (${cell}) was invalid: "${value}" - setting default: ${defaultVal}`);
+      range.setValue(defaultVal);
+      fixed = true;
+    }
+  });
+  
+  if (fixed) {
+    Logger.log('✅ Settings targets validated and defaults applied where needed');
+  }
+}
+
+/**
+ * FORMULA AUDIT FIX: Auto-fix DASHBOARD target column formulas (with UI)
+ * Corrects C10-C16 to reference B3-B9 (data rows) instead of B2 (header)
+ * Called manually via menu - shows confirmation dialogs
+ * Added: 2025-10-08 after formula audit
+ */
+function fixDashboardTargetFormulas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const dashboard = ss.getSheetByName('DASHBOARD');
+  
+  if (!dashboard) {
+    ui.alert('⚠️ DASHBOARD not found', 'Please run Initialize Template first.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  try {
+    // Check for issues first
+    const issues = typeof HealthCheck !== 'undefined' && HealthCheck.checkDashboardTargetFormulas
+      ? HealthCheck.checkDashboardTargetFormulas(dashboard)
+      : [];
+    
+    if (issues.length === 0) {
+      ui.alert('✅ All Good!', 'DASHBOARD formulas are already correct. No fixes needed!', ui.ButtonSet.OK);
+      return;
+    }
+    
+    // Show what will be fixed
+    const issueList = issues.map(i => `• ${i.cell} (${i.metric}): ${i.problem}`).join('\n');
+    const confirm = ui.alert(
+      '🔧 Fix DASHBOARD Formulas?',
+      `Found ${issues.length} issue(s):\n\n${issueList}\n\nApply automatic fix?`,
+      ui.ButtonSet.YES_NO
+    );
+    
+    if (confirm !== ui.Button.YES) {
+      return;
+    }
+    
+    // Apply the fix
+    const fixed = applyDashboardTargetFixes(dashboard);
+    
+    // Verify fix worked
+    const remainingIssues = typeof HealthCheck !== 'undefined' && HealthCheck.checkDashboardTargetFormulas
+      ? HealthCheck.checkDashboardTargetFormulas(dashboard)
+      : [];
+    
+    if (remainingIssues.length === 0) {
+      ui.alert(
+        '✅ Fix Complete!',
+        `Successfully fixed ${fixed} formula(s)!\n\n` +
+        `All Target values now display correctly.\n` +
+        `Variance and Status columns should also be working.\n\n` +
+        `Check DASHBOARD to verify.`,
+        ui.ButtonSet.OK
+      );
+    } else {
+      ui.alert(
+        '⚠️ Partial Fix',
+        `Fixed ${fixed} formulas, but ${remainingIssues.length} issue(s) remain.\n\n` +
+        `Check Settings & Budget tab to ensure target values exist in B3-B9.`,
+        ui.ButtonSet.OK
+      );
+    }
+    
+  } catch (error) {
+    ui.alert('❌ Fix Failed', `Error: ${error.toString()}\n\nCheck Apps Script logs for details.`, ui.ButtonSet.OK);
+    Logger.log('fixDashboardTargetFormulas error: ' + error);
+  }
+}
+
+/**
+ * FORMULA AUDIT FIX: Auto-fix DASHBOARD target formulas (silent)
+ * Same as fixDashboardTargetFormulas but without UI prompts
+ * Called automatically on sheet open if issues detected
+ * Added: 2025-10-08 after formula audit
+ */
+function fixDashboardTargetFormulasSilent() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const dashboard = ss.getSheetByName('DASHBOARD');
+    
+    if (!dashboard) {
+      Logger.log('fixDashboardTargetFormulasSilent: DASHBOARD not found');
+      return 0;
+    }
+    
+    const fixed = applyDashboardTargetFixes(dashboard);
+    
+    if (fixed > 0) {
+      Logger.log(`✅ Auto-fixed ${fixed} DASHBOARD target formula(s) on sheet open`);
+      ss.toast(`Auto-fixed ${fixed} DASHBOARD formula(s)`, 'Formula Fix Applied', 3);
+    }
+    
+    return fixed;
+    
+  } catch (error) {
+    Logger.log('fixDashboardTargetFormulasSilent error: ' + error);
+    return 0;
+  }
+}
+
+/**
+ * FORMULA AUDIT FIX: Apply fixes to DASHBOARD target formulas
+ * Core fix logic used by both manual and automatic fix functions
+ * Returns: Number of cells fixed
+ * Added: 2025-10-08 after formula audit
+ */
+function applyDashboardTargetFixes(dashboard) {
+  const fixes = [
+    { cell: 'C10', formula: '=IFERROR(\'Settings & Budget\'!B3,"⚠️ Setup")', metric: 'Leads' },
+    { cell: 'C11', formula: '=IFERROR(\'Settings & Budget\'!B4,"⚠️ Setup")', metric: 'Set Rate' },
+    { cell: 'C12', formula: '=IFERROR(\'Settings & Budget\'!B5,"⚠️ Setup")', metric: 'Show Rate' },
+    { cell: 'C13', formula: '=IFERROR(\'Settings & Budget\'!B6,"⚠️ Setup")', metric: 'Close Rate' },
+    { cell: 'C14', formula: '=IFERROR(\'Settings & Budget\'!B7,"⚠️ Setup")', metric: 'New Members' },
+    { cell: 'C15', formula: '=IFERROR(\'Settings & Budget\'!B8,"⚠️ Setup")', metric: 'MRR' },
+    { cell: 'C16', formula: '=IFERROR(\'Settings & Budget\'!B9,"⚠️ Setup")', metric: 'CAC' }
+  ];
+  
+  let fixedCount = 0;
+  fixes.forEach(({ cell, formula, metric }) => {
+    dashboard.getRange(cell).setFormula(formula);
+    fixedCount++;
+    Logger.log(`✅ Fixed ${cell} (${metric}): ${formula}`);
+  });
+  
+  SpreadsheetApp.flush();
+  return fixedCount;
+}
+
+/**
+ * CLEANUP: Fix Settings & Budget Dropdown Lists
+ * Removes blank rows, duplicates, and corrupted data from dropdown areas
+ * Prevents Marketing Budget data from being picked up as dropdown values
+ * Added: 2025-10-08 after health check identified data corruption
+ */
+function cleanupSettingsDropdowns() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const settings = ss.getSheetByName('Settings & Budget');
+  
+  if (!settings) {
+    ui.alert('❌ Error', 'Settings & Budget sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const confirm = ui.alert(
+    '🧹 Clean Up Settings Dropdowns?',
+    'This will:\n' +
+    '• Remove blank rows in dropdown lists\n' +
+    '• Remove duplicate values\n' +
+    '• Clear corrupted data (budget values in wrong columns)\n' +
+    '• Add separator between sections\n' +
+    '• Set up monthly backup trigger\n\n' +
+    'All valid dropdown data will be preserved.\n\n' +
+    'Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (confirm !== ui.Button.YES) {
+    return;
+  }
+  
+  try {
+    let issuesFixed = 0;
+    
+    // Clean up each dropdown column
+    // A14-A24: Sources (11 items)
+    issuesFixed += cleanDropdownColumn(settings, 'A', 14, 24, 'Sources', [
+      'Paid Search', 'Paid Social', 'Direct Traffic', 'Organic Search', 
+      'Social Media', 'Referrals', 'Others', 'CRM UI', 'Third-Party', 
+      'Member Referral', 'Walk-In'
+    ]);
+    
+    // B14-B24: Staff (keep user's custom staff names, just remove blanks and duplicates)
+    issuesFixed += cleanDropdownColumn(settings, 'B', 14, 24, 'Staff', null);
+    
+    // C14: Location (single value only)
+    const locationValue = settings.getRange('C14').getValue();
+    if (!locationValue || locationValue.toString().trim() === '') {
+      settings.getRange('C14').setValue('Main Location');
+      issuesFixed++;
+    }
+    // Clear any junk in C15-C35
+    settings.getRange('C15:C35').clearContent();
+    
+    // D14-D24: Types
+    issuesFixed += cleanDropdownColumn(settings, 'D', 14, 24, 'Types', [
+      'PT', 'Small Group', 'General', 'Class Pack'
+    ]);
+    
+    // E14-E24: Cancel Reasons
+    issuesFixed += cleanDropdownColumn(settings, 'E', 14, 24, 'Cancel Reasons', [
+      'Price', 'Moved', 'Injury', 'Service', 'Location', 'Other'
+    ]);
+    
+    // G14-G24: Status Values
+    issuesFixed += cleanDropdownColumn(settings, 'G', 14, 19, 'Status Values', [
+      'Lead', 'Appt Set', 'Show', 'Trial', 'Member', 'Cancelled'
+    ]);
+    
+    // Add clear separator at row 36 (before Marketing Budget section)
+    settings.getRange('A36').setValue('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━').setFontColor('#cccccc');
+    settings.getRange('A36:G36').merge().setHorizontalAlignment('center').setBackground('#f3f3f3');
+    
+    // Set up monthly backup trigger
+    try {
+      const triggers = ScriptApp.getProjectTriggers();
+      const hasBackup = triggers.some(t => t.getHandlerFunction() === 'autoMonthlyBackup');
+      
+      if (!hasBackup) {
+        ScriptApp.newTrigger('autoMonthlyBackup')
+          .timeBased()
+          .onMonthDay(1)
+          .atHour(2)
+          .create();
+        issuesFixed++;
+        Logger.log('✅ Monthly backup trigger created');
+      }
+    } catch (triggerError) {
+      Logger.log('⚠️ Could not create backup trigger: ' + triggerError);
+    }
+    
+    SpreadsheetApp.flush();
+    
+    ui.alert(
+      '✅ Cleanup Complete!',
+      `Fixed ${issuesFixed} issue(s).\n\n` +
+      'Dropdown lists cleaned and organized.\n' +
+      'Monthly backup trigger configured.\n\n' +
+      'Run "Gym Ops → Run Health Check" to verify all issues resolved.',
+      ui.ButtonSet.OK
+    );
+    
+  } catch (error) {
+    ui.alert('❌ Cleanup Failed', error.toString(), ui.ButtonSet.OK);
+    Logger.log('cleanupSettingsDropdowns error: ' + error);
+  }
+}
+
+/**
+ * Clean a specific dropdown column - removes blanks, duplicates, invalid data
+ */
+function cleanDropdownColumn(sheet, column, startRow, endRow, name, expectedValues) {
+  let fixCount = 0;
+  
+  // If expected values provided, just set them (most reliable)
+  if (expectedValues && expectedValues.length > 0) {
+    const range = sheet.getRange(`${column}${startRow}:${column}${endRow}`);
+    range.clearContent();
+    
+    expectedValues.forEach((value, idx) => {
+      if (startRow + idx <= endRow) {
+        sheet.getRange(`${column}${startRow + idx}`).setValue(value);
+      }
+    });
+    
+    Logger.log(`✅ Reset ${name} to expected values (${expectedValues.length} items)`);
+    return expectedValues.length;
+  }
+  
+  // Otherwise, clean existing data
+  const range = sheet.getRange(`${column}${startRow}:${column}${endRow}`);
+  const values = range.getValues();
+  
+  const validValues = [];
+  const seen = new Set();
+  
+  values.forEach(([value]) => {
+    if (!value) return;
+    
+    const str = value.toString().trim();
+    if (!str) return;
+    
+    // Skip separator tokens
+    if (str.startsWith('━━━━') || str.startsWith('📅') || str.startsWith('💰')) return;
+    
+    // Skip obvious budget data (dollar amounts, just numbers)
+    if (name !== 'Types' && str.match(/^\$\d+\.?\d*/)) {
+      fixCount++;
+      return;
+    }
+    if (name !== 'Types' && name !== 'Status Values' && str.match(/^\d+$/)) {
+      fixCount++;
+      return;
+    }
+    
+    // Skip duplicates
+    const key = str.toLowerCase();
+    if (seen.has(key)) {
+      fixCount++;
+      Logger.log(`Removed duplicate from ${name}: ${str}`);
+      return;
+    }
+    
+    seen.add(key);
+    validValues.push([str]);
+  });
+  
+  // Clear range and rewrite clean data
+  range.clearContent();
+  if (validValues.length > 0) {
+    sheet.getRange(`${column}${startRow}`, 1, validValues.length, 1).setValues(validValues);
+  }
+  
+  if (fixCount > 0) {
+    Logger.log(`✅ Cleaned ${name}: removed ${fixCount} invalid/duplicate entries`);
+  }
+  
+  return fixCount;
 }
