@@ -1,0 +1,227 @@
+# Gym Ops Tracker - Cursor Rules
+
+## 🎯 Project Context
+
+This is a Google Sheets Apps Script project for gym operations tracking. The codebase has comprehensive documentation to prevent cascading failures.
+
+## 📚 ALWAYS Review These Docs BEFORE Making Changes
+
+Before ANY code change, you MUST:
+
+1. **Read `docs/ARCHITECTURE.md`** - Understand system structure and dependencies
+2. **Check `docs/CELL-REFERENCE-MAP.md`** - Know what cells are affected
+3. **Review `docs/CHANGES.md`** - See recent modifications
+
+**⚠️ NEVER REFERENCE `_archive/`**
+- `_archive/` contains OUTDATED documentation (v2.1, wrong line counts, old architecture)
+- Referencing archived files will cause incorrect changes
+- `_archive/` is in `.cursorignore` - should not be indexed
+- ONLY use `docs/` for current documentation
+
+## 🔧 Code Modification Rules
+
+### Rule 1: Use CELL_REFS Constants (MANDATORY)
+
+**NEVER hard-code cell references.** Always use the CELL_REFS constants defined in GYM-OPS-ULTRA-COMPLETE.gs.
+
+```javascript
+// ❌ BAD - Hard-coded
+sheet.getRange('B30').getValue()
+
+// ✅ GOOD - Using constants
+sheet.getRange(CELL_REFS.SETTINGS.DATE_START).getValue()
+```
+
+**Available Constants:**
+- `CELL_REFS.SETTINGS.*` - Settings & Budget cells
+- `CELL_REFS.DASHBOARD.*` - Dashboard cells
+- `CELL_REFS.LEAD_DATA.*` - Lead Data columns
+- `CELL_REFS.LTV_CALCULATIONS.*` - LTV table references
+- `CELL_REFS.MEMBERS.*` - Members tab cells
+- `CELL_REFS.METRICS.*` - Metrics tab cells
+
+### Rule 2: Production File is GYM-OPS-ULTRA-COMPLETE.gs
+
+**File Priority:**
+1. **GYM-OPS-ULTRA-COMPLETE.gs** - 🟢 PRODUCTION (make all changes here)
+
+**Note:** We use git for version control. Manual backup files are not needed.
+
+### Rule 3: Check Dependencies Before Changing
+
+**Before modifying any cell/formula, check:**
+- `docs/CELL-REFERENCE-MAP.md` - What depends on this cell?
+- `docs/ARCHITECTURE.md` - What tabs are affected?
+
+**Critical Cells (High Impact):**
+- Settings B30/B31 (Date range) - Breaks ALL metrics if changed
+- Settings A40:E100 (Marketing Budget) - Breaks Spend calculations
+- Lead Data H2 (Source formula) - Breaks all source analytics
+- Dashboard G20 (Spend formula) - Breaks CPL, CPA, CPS, CAC
+- Dashboard L20 (LTV formula) - Breaks LTV:CAC ratio
+
+### Rule 4: Always Document Complex Formulas
+
+When adding/modifying complex formulas, add this comment block:
+
+```javascript
+// ═══════════════════════════════════════════════════════════════
+// 📊 [FORMULA NAME] ([CELL REFERENCE])
+// ═══════════════════════════════════════════════════════════════
+// Purpose: [What it does]
+// Dependencies: [What it references]
+// Used by: [What references it]
+// Impact: [What breaks if modified]
+// Example output: [Sample value]
+// ═══════════════════════════════════════════════════════════════
+```
+
+## ✅ Testing Requirements (MANDATORY)
+
+After EVERY code change:
+
+1. **Run automated tests:**
+   - Health Check
+   - Validate & Auto-Fix
+   - Quick Test
+
+2. **Manual verification:**
+   - DASHBOARD metrics show values
+   - SOURCE ANALYSIS columns populated
+   - Members tab displays correctly
+   - No #REF! or #ERROR! messages
+
+3. **Follow `docs/DEPLOY-CHECKLIST.md`** for deployment
+
+## 📝 Documentation Requirements (MANDATORY)
+
+After EVERY code change:
+
+1. **Update `docs/CHANGES.md`:**
+   - Date and version
+   - File and line numbers changed
+   - What changed and why
+   - Impact analysis
+   - Test results
+   - Rollback plan
+
+2. **If adding new cells/formulas:**
+   - Update `docs/CELL-REFERENCE-MAP.md`
+   - Add to CELL_REFS constants if critical
+
+3. **If changing architecture:**
+   - Update `docs/ARCHITECTURE.md`
+
+**IMPORTANT:** 
+- ❌ Do NOT create separate .md files for every change
+- ✅ Document changes in `docs/CHANGES.md` only
+- ✅ Use git commit messages for detailed change history
+- 📝 Separate .md files are only for major features or architectural changes
+
+## 🚫 NEVER Do These
+
+1. **NEVER rename tabs** - Causes #REF! errors everywhere
+2. **NEVER delete columns** - Clear data instead
+3. **NEVER skip testing** - Bugs will reach production
+4. **NEVER hard-code cell references** - Use CELL_REFS constants
+5. **NEVER modify without documenting** - Update CHANGES.md (not separate .md files)
+6. **NEVER deploy without checklist** - Follow DEPLOY-CHECKLIST.md
+7. **NEVER create manual backup files** - Use git for version control
+
+## 🔍 Troubleshooting
+
+When debugging issues:
+
+1. **Check `docs/TROUBLESHOOTING.md`** - Common issues with solutions
+2. **Run Health Check** - Automated diagnostics
+3. **Review `docs/CHANGES.md`** - What changed recently?
+4. **Check `docs/CELL-REFERENCE-MAP.md`** - Cell dependencies
+
+## 📋 Common Issue Quick Reference
+
+| Symptom | Check This | Solution Doc |
+|---------|------------|--------------|
+| SOURCE ANALYSIS shows $0 | Marketing Budget data | TROUBLESHOOTING.md → Issue 1 |
+| #REF! errors | Tab names/structure | TROUBLESHOOTING.md → Issue 2 |
+| Members tab empty | QUERY formula | TROUBLESHOOTING.md → Issue 3 |
+| Source column blank | H2 formula | TROUBLESHOOTING.md → Issue 4 |
+
+## 🎯 Workflow for Changes
+
+**Standard workflow for ANY modification:**
+
+```
+1. Read ARCHITECTURE.md → Understand dependencies
+2. Check CELL-REFERENCE-MAP.md → Know impact
+3. Use CELL_REFS constants → No hard-coding
+4. Make changes → Document inline
+5. Run tests → Follow TESTING-GUIDE.md
+6. Follow checklist → Use DEPLOY-CHECKLIST.md
+7. Document → Update CHANGES.md
+8. Deploy → Test in production
+```
+
+## 💡 Best Practices
+
+1. **Think before changing** - One change can break multiple features
+2. **Test locally first** - Use test sheet if available
+3. **Document everything** - Future you will thank you
+4. **Use constants** - Makes refactoring easier
+5. **Follow checklists** - They exist for a reason
+6. **Check dependencies** - Know what else is affected
+
+## 🏗️ Tab Creation Order (Critical)
+
+When initializing/recreating tabs, ALWAYS use this order:
+
+```
+1. Settings & Budget (no dependencies)
+2. _UTM Tracking (no dependencies)
+3. Lead Data (depends on Settings, _UTM Tracking)
+4. Import Members (no dependencies)
+5. _LTV Calculations (depends on Lead Data, Import Members)
+6. _Metrics (depends on Lead Data, Settings)
+7. Members (depends on Lead Data)
+8. DASHBOARD (depends on ALL above)
+9. LTV Analysis (depends on _LTV Calculations)
+10. Help (no dependencies)
+```
+
+**Why:** Tabs reference each other. Creating in wrong order causes #REF! errors.
+
+## 📞 When Stuck
+
+1. Check relevant doc in `docs/` folder
+2. Run Health Check for diagnostics
+3. Review TROUBLESHOOTING.md for similar issues
+4. Check CHANGES.md for recent modifications
+5. Restore from backup if needed
+
+## 🎓 Key Principles
+
+- **Prevention > Cure** - Document and test before deploying
+- **Explicit > Implicit** - Use constants, add comments
+- **Centralized > Scattered** - Single source of truth
+- **Automated > Manual** - Run tests, use checklists
+- **Documented > Undocumented** - Track every change
+
+## 📊 Success Metrics
+
+Your changes are good when:
+- ✅ All automated tests pass
+- ✅ No hard-coded cell references
+- ✅ CHANGES.md updated
+- ✅ DEPLOY-CHECKLIST.md followed
+- ✅ No #REF! or #ERROR! in production
+- ✅ Documentation matches code
+
+---
+
+**Remember:** This codebase has burned us before with cascading failures. The documentation system exists to prevent that. USE IT.
+
+**Core Docs Location:** `docs/` folder
+
+**Main Production File:** `GYM-OPS-ULTRA-COMPLETE.gs`
+
+**When in doubt:** Check ARCHITECTURE.md first, CELL-REFERENCE-MAP.md second, TROUBLESHOOTING.md third.
+

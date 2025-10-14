@@ -1,8 +1,46 @@
-# 🏋️ Gym Ops Tracker v2.0 - SIMPLIFIED
+# 🏋️ Gym Ops Tracker v2.2.3 - Production Ready
 
 **Google Sheets + Apps Script for Gyms & Studios**
 
-Complete operations tracker with 2-minute setup wizard, unified dashboard, and automated analytics.
+Complete operations tracker with comprehensive documentation, automated validation, and self-healing formulas.
+
+**Version:** 2.2.3 Ultra-Complete  
+**Code Size:** 2,580 lines (51% reduction from v2.1)  
+**Status:** Production ready with automated testing
+
+---
+
+## 📚 DOCUMENTATION (START HERE)
+
+**New to the project?** Read these docs in order:
+
+1. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System structure, dependencies, critical cells
+2. **[CELL-REFERENCE-MAP.md](docs/CELL-REFERENCE-MAP.md)** - Complete cell reference guide
+3. **[DEPLOY-CHECKLIST.md](docs/DEPLOY-CHECKLIST.md)** - Pre-deployment validation steps
+4. **[TESTING-GUIDE.md](docs/TESTING-GUIDE.md)** - How to test changes
+5. **[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+6. **[CHANGES.md](docs/CHANGES.md)** - Change log and history
+
+**Making changes?** Follow this workflow:
+1. Read ARCHITECTURE.md → understand dependencies
+2. Make changes using CELL_REFS constants
+3. Follow DEPLOY-CHECKLIST.md → test thoroughly
+4. Document in CHANGES.md → track what changed
+5. If issues → check TROUBLESHOOTING.md
+
+**Key Principle:** Test BEFORE deploying, not after!
+
+---
+
+## 📁 File Structure
+
+| File | Status | Purpose |
+|------|--------|---------|
+| **GYM-OPS-ULTRA-COMPLETE.gs** | 🟢 PRODUCTION | Single source file - deploy this |
+
+**Rule:** This is the only active code file. All development happens here.
+
+**Version Control:** We use git for backups and version history. Old versions are in `_archive/`.
 
 ---
 
@@ -26,64 +64,90 @@ Complete operations tracker with 2-minute setup wizard, unified dashboard, and a
 
 ---
 
-## 🚀 5-Minute Install
+## 🚀 2-Minute Install
 
 ```
 1. Create new Google Sheet
 2. Extensions → Apps Script
-3. Copy Code.gs from repo → Paste → Save
+3. Copy GYM-OPS-ULTRA-COMPLETE.gs from repo → Paste → Save
 4. Refresh sheet (F5)
-5. Gym Ops → Quick Start Wizard
-6. Done! ✅
+5. Wait 30 seconds for "Gym Ops" menu to appear
+6. Click: Gym Ops → Initialize V2
+7. Done! ✅ All 13 tabs created!
+```
+
+**Features:**
+- ✅ Automated validation & auto-fix
+- ✅ Health check diagnostics
+- ✅ Self-healing formulas
+- ✅ Comprehensive testing suite
+
+---
+
+## 📊 Tab Structure (13 Tabs)
+
+| Tab | Type | What It Does |
+|-----|------|--------------|
+| **DASHBOARD** | Main | KPIs, source analysis, action items, member alerts |
+| **Lead Data** | Data Entry | Enter all leads (34 columns, auto-calculated) |
+| **Members** | View | Auto-filtered active members with toggle |
+| **Settings & Budget** | Config | Targets, dropdowns, marketing budgets, date ranges |
+| **Import Members** | Data Entry | Import existing members for LTV tracking |
+| **LTV Analysis** | Analytics | Lifetime value by source and package type |
+| **Help** | Guide | Quick reference (auto-hidden) |
+| **_UTM Tracking** | Hidden | UTM parameter tracking for attribution |
+| **_LTV Calculations** | Hidden | LTV calculation engine |
+| **_Metrics** | Hidden | Net gain/loss calculations |
+| **_Chart Data** | Hidden | Chart data aggregation |
+| **_Data** | Hidden | Helper calculations |
+| **_Daily Spend** | Hidden | Marketing spend calculations |
+
+---
+
+## 📝 Lead Data (34 Columns)
+
+**Manual Entry:**
+```
+A Lead ID          L Appt Set? ☑      V MRR ($)
+B Created Date     M Appt Date        W Upfront Fee ($)
+C First Name       N Show? ☑          X Cancelled? ☑
+D Last Name        O Show Date        Y Cancel Date
+E Phone            P Start Trial? ☑   Z Cancel Reason
+F Email            Q Trial Start      AA Notes
+G DOB              S Converted? ☑
+I Campaign         T Member Start
+J Staff Owner      U Membership Type
+K Location
+```
+
+**Auto-Calculated (Blue/Green background):**
+```
+H Source (from _UTM Tracking)
+R Trial End (= Q + trial length)
+AB Current Status (derived from checkboxes)
+AC Age (Days) (visual indicator)
+AD Lead Score (hot/warm/cold)
+AE Action Needed (next step)
+AF Duplicate? (phone/email check)
+AG Days to Convert
+AH Last Touchpoint
 ```
 
 ---
 
-## 📊 Tab Structure (8 Tabs)
+## 🎯 DASHBOARD - Comprehensive Analytics
 
-| Tab | What It Does |
-|-----|--------------|
-| **DASHBOARD** | KPIs, action items, member alerts - one page |
-| **Lead Data** | Enter all leads (25 columns) |
-| **Members** | Auto-filtered active members |
-| **Settings & Budget** | Targets, dropdowns, marketing budgets |
-| **Help** | Quick guide |
-| **_Data** | Hidden - calculations |
+1. **Today's Snapshot** - Hot leads, active MRR
+2. **Key Metrics** - Leads, Set%, Show%, Close%, New Members, MRR, CAC
+3. **On-Pace Status** - vs targets (green = on track, red = behind)
+4. **Source Analysis** - 13 metrics per source (Leads, Spend, CPL, CPA, CPS, CAC, LTV, LTV:CAC)
+5. **LTV:CAC Health Check** - Overall ratio with status
+6. **Action Items** - No appt set, no shows, trials expiring
+7. **Member Alerts** - Trials ending, birthdays
+8. **Net Gain/Loss** - By membership type (selected date range)
+9. **New Revenue** - By membership type
 
----
-
-## 📝 Lead Data (25 Columns)
-
-**Entry (23):**
-```
-A Created Date     K Appt Set? ☑      U Cancelled? ☑
-B First Name       L Appt Date        V Cancel Date
-C Last Name        M Show? ☑          W Cancel Reason
-D Phone            N Trial Start      X Notes
-E Email            P Converted? ☑
-F DOB              Q Member Start
-G Source           R Membership Type
-H Campaign         S MRR ($)
-I Staff            T Upfront Fee ($)
-J Location
-```
-
-**Auto (2):**
-```
-O Trial End (= N + 14 days) [green bg]
-Y Current Status (derived) [green bg]
-```
-
----
-
-## 🎯 DASHBOARD - One-Page Morning Check
-
-1. **KPIs & On-Pace** - Leads, Set%, Show%, Close%, Members, MRR, CAC
-2. **Action Items** - No appt set, no shows, expiring trials
-3. **Member Alerts** - Trials ending, birthdays
-4. **Trends** - Active members chart (90 days)
-
-**One page = everything you need.**
+**Everything you need on one page with flexible date range filtering.**
 
 ---
 
@@ -109,17 +173,21 @@ Y Current Status (derived) [green bg]
 
 ---
 
-## 🧙 Quick Start Wizard
+## 🚀 Getting Started
 
-**Gym Ops → Quick Start Wizard**
+**After installation:**
 
-4 steps (2 minutes):
-1. Gym name
-2. Monthly new member goal
-3. Keep default lead sources?
-4. Add 20 sample leads?
+1. **Initialize:** Gym Ops → Initialize V2 (creates all 13 tabs)
+2. **Add Sample Data:** Gym Ops → Add 20 Sample Leads (test the system)
+3. **Configure:** Settings & Budget tab (set your targets, sources, staff)
+4. **Test:** Gym Ops → Health Check (verify everything works)
+5. **Go Live:** Delete sample leads, start entering real data
 
-**Done!** Tracker is customized and ready.
+**Menu Actions:**
+- 📥 Add 20 Sample Leads - Test data with UTM tracking
+- 🏥 Health Check - Automated diagnostics
+- ✅ Validate & Auto-Fix - Fixes common issues automatically
+- 🧪 Quick Test - Verify system components
 
 ---
 
@@ -167,10 +235,14 @@ Y Current Status (derived) [green bg]
 
 | Action | What It Does |
 |--------|--------------|
-| Quick Start Wizard | 2-min interactive setup |
-| Initialize Template | Create all 8 tabs (idempotent) |
-| Refresh Dashboards | Force recalculation |
-| Add Sample Data | 20 test leads |
+| Initialize Template V2 | Create all 13 tabs with validation |
+| View Dashboard/Lead Data/Members | Quick navigation |
+| Add 20 Sample Leads | Test leads with UTM tracking |
+| Validate & Auto-Fix | Check formulas and auto-repair issues |
+| Quick Test | Verify system components |
+| Health Check | Comprehensive diagnostics |
+| Optimize Performance | Enable caching for large datasets |
+| Test Member Toggle | Verify member filtering |
 
 ---
 
@@ -226,13 +298,23 @@ Y Current Status (derived) [green bg]
 
 ---
 
-## 📦 Files
+## 📦 Repository Structure
 
-- **Code.gs** - Apps Script (700 lines, simplified from 1,325)
-- **README.md** - This file
-- **SETUP.md** - Quick installation guide
-- **IMPROVEMENTS.md** - 10 simplifications explained
-- **appsscript.json** - Config
+**Production:**
+- `GYM-OPS-ULTRA-COMPLETE.gs` - Main code file (2,580 lines)
+- `README.md` - This file
+- `appsscript.json` - Apps Script configuration
+
+**Documentation:**
+- `docs/ARCHITECTURE.md` - System structure and dependencies
+- `docs/CELL-REFERENCE-MAP.md` - Complete cell reference guide
+- `docs/DEPLOY-CHECKLIST.md` - Pre-deployment validation
+- `docs/CHANGES.md` - Change log and history
+- `docs/TROUBLESHOOTING.md` - Common issues and solutions
+- `docs/TESTING-GUIDE.md` - How to test changes
+
+**Archive:**
+- `_archive/` - Historical files and old versions
 
 ---
 

@@ -1535,7 +1535,7 @@ function createLeadDataTab(ss) {
   sheet.getRange('R2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(ISNUMBER(Q2:Q),DATEVALUE(Q2:Q)+\'Settings & Budget\'!B33,"")))');
   
   // AB2: Current Status (check if T is date for Member, Q for Trial) - FIXED: Updated column references
-  sheet.getRange('AB2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(W2:W=TRUE,"Cancelled",IF(S2:S=TRUE,"Member",IF((T2:T<>"")*ISNUMBER(T2:T),"Trial",IF(N2:N=TRUE,"Show",IF(L2:L=TRUE,"Appt Set","Lead"))))))))');
+  sheet.getRange('AB2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IF(X2:X=TRUE,"Cancelled",IF(S2:S=TRUE,"Member",IF((T2:T<>"")*ISNUMBER(T2:T),"Trial",IF(N2:N=TRUE,"Show",IF(L2:L=TRUE,"Appt Set","Lead"))))))))');
   
   // AC2: Age (Days) - Days since created - HIGH FIX #4 + UX #11: Enhanced with emoji indicators
   sheet.getRange('AC2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",IF(B2:B="","",
@@ -1568,7 +1568,7 @@ function createLeadDataTab(ss) {
   // AE2: Action Needed - Smart next step - FIXED: Updated all column references
   sheet.getRange('AE2').setFormula(`=ARRAYFORMULA(IF(A2:A="","",
     IF(S2:S=TRUE,"✅ Member",
-      IF(W2:W=TRUE,"⛔ Cancelled",
+      IF(X2:X=TRUE,"⛔ Cancelled",
         IF((Q2:Q<>"")*(R2:R<=TODAY()+3),"🔥 TRIAL EXPIRING!",
           IF((L2:L=FALSE)*(AC2:AC>=2),"📞 SET APPOINTMENT",
             IF((L2:L=TRUE)*(N2:N=FALSE)*(M2:M<TODAY()),"⚠️ NO-SHOW - FOLLOW UP",
@@ -2982,7 +2982,7 @@ function createLTVCalculationsTab(ss) {
         cancelled,INDEX(leadRows,r,24),
         cancelDate,INDEX(leadRows,r,25),
         status,IF(cancelled,"Cancelled","Active"),
-        lifespan,IF(joinDate="","",IF(cancelled,IF(cancelDate="","",DATEDIF(joinDate,cancelDate,"M")),DATEDIF(joinDate,TODAY(),"M"))),
+        lifespan,IF(joinDate="","",IF(cancelled,IF(cancelDate="","",DATEDIF(joinDate,cancelDate,"M")),MAX(1,DATEDIF(joinDate,TODAY(),"M")))),
         mrr,INDEX(leadRows,r,22),
         ltv,IF(OR(mrr="",lifespan=""),"",mrr*lifespan),
         CHOOSE(c,
