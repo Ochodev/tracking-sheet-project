@@ -60,7 +60,34 @@ sheet.getRange(CELL_REFS.SETTINGS.DATE_START).getValue()
 - Dashboard G20 (Spend formula) - Breaks CPL, CPA, CPS, CAC
 - Dashboard L20 (LTV formula) - Breaks LTV:CAC ratio
 
-### Rule 4: Always Document Complex Formulas
+### Rule 4: Follow Formula Patterns (CRITICAL)
+
+**BEFORE writing ANY formula, check `docs/FORMULA-PATTERNS.md`**
+
+**Safe Patterns (Use These):**
+- ✅ VLOOKUP in ARRAYFORMULA (works great)
+- ✅ MAP + LAMBDA for complex logic
+- ✅ LET for readable formulas
+- ✅ Array addition `(condition1)+(condition2)` for OR logic
+- ✅ QUERY for filtering data
+
+**Anti-Patterns (NEVER Use):**
+- ❌ INDEX/MATCH in ARRAYFORMULA (use VLOOKUP instead)
+- ❌ OR() in ARRAYFORMULA (use array addition instead)
+- ❌ Nested ARRAYFORMULA
+- ❌ Hard-coded ranges (use CELL_REFS)
+
+**Formula Testing Checklist:**
+- [ ] Pattern matches docs/FORMULA-PATTERNS.md
+- [ ] Tested in isolated cell with sample data
+- [ ] Handles empty cells, zeros, missing data
+- [ ] Calculates quickly (< 2 seconds)
+- [ ] Uses CELL_REFS constants
+- [ ] Documented inline
+
+**If modifying complex formula:** Test thoroughly before deploying. Complex formulas (MAP/LAMBDA/LET) are the #1 source of breaking changes.
+
+### Rule 5: Always Document Complex Formulas
 
 When adding/modifying complex formulas, add this comment block:
 

@@ -16,10 +16,11 @@ Complete operations tracker with comprehensive documentation, automated validati
 
 1. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System structure, dependencies, critical cells
 2. **[CELL-REFERENCE-MAP.md](docs/CELL-REFERENCE-MAP.md)** - Complete cell reference guide
-3. **[DEPLOY-CHECKLIST.md](docs/DEPLOY-CHECKLIST.md)** - Pre-deployment validation steps
-4. **[TESTING-GUIDE.md](docs/TESTING-GUIDE.md)** - How to test changes
-5. **[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
-6. **[CHANGES.md](docs/CHANGES.md)** - Change log and history
+3. **[FORMULA-PATTERNS.md](docs/FORMULA-PATTERNS.md)** - ⭐ Safe formula patterns (prevents breaking changes)
+4. **[DEPLOY-CHECKLIST.md](docs/DEPLOY-CHECKLIST.md)** - Pre-deployment validation steps
+5. **[TESTING-GUIDE.md](docs/TESTING-GUIDE.md)** - How to test changes
+6. **[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+7. **[CHANGES.md](docs/CHANGES.md)** - Change log and history
 
 **Making changes?** Follow this workflow:
 1. Read ARCHITECTURE.md → understand dependencies

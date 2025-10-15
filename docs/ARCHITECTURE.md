@@ -1,6 +1,6 @@
 # GYM OPS TRACKER - SYSTEM ARCHITECTURE
 
-**Version:** 2.2.1  
+**Version:** 2.2.3  
 **Last Updated:** October 14, 2025  
 **Status:** Production Ready
 
@@ -207,6 +207,8 @@ After making ANY change, run these checks:
 
 | Version | Date | Major Changes |
 |---------|------|---------------|
+| 2.2.3 | Oct 14, 2025 | Added CELL_REFS constants + comprehensive docs |
+| 2.2.2 | Oct 14, 2025 | Fixed SOURCE ANALYSIS Spend & LTV formulas |
 | 2.2.1 | Oct 13, 2025 | Added auto-validation system |
 | 2.2.0 | Oct 12, 2025 | Fixed SOURCE ANALYSIS formulas |
 | 2.1.0 | Oct 8, 2025 | Refactored to TabBuilder architecture |

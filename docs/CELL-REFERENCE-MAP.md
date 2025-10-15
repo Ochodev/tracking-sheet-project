@@ -269,6 +269,10 @@
 
 ## 📝 Lead Data Tab
 
+**⚠️ IMPORTANT: Row 2 is HIDDEN and contains ARRAYFORMULA formulas.**  
+**Users enter lead data starting in ROW 3.**  
+**DO NOT delete or unhide row 2 - it contains critical auto-calculation formulas.**
+
 ### Auto-Calculated Formulas
 
 #### H2: Source Formula (CRITICAL)
