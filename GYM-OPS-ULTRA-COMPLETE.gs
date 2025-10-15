@@ -571,13 +571,13 @@ function clearPerformanceCache() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function createMembersTabV2(ss) {
-  const builder = new TabBuilder(ss, 'Members');
-  const leadDataSheet = ss.getSheetByName(SHEET.LEAD_DATA);
-  const leadLastRow = leadDataSheet ? leadDataSheet.getLastRow() : 0;
-  const desiredRows = Math.max(leadLastRow + 50, 300); // Start with 300 rows so QUERY overflow and dynamic growth stay safe without triggering circular dependencies
+    const builder = new TabBuilder(ss, 'Members');
+    const leadDataSheet = ss.getSheetByName(SHEET.LEAD_DATA);
+    const leadLastRow = leadDataSheet ? leadDataSheet.getLastRow() : 0;
+    const desiredRows = Math.max(leadLastRow + 50, 300); // Start with 300 rows so QUERY overflow and dynamic growth stay safe without triggering circular dependencies
 
-  builder.create()
-         .resize(desiredRows, 34); // Size dynamically so QUERY array can expand
+    builder.create()
+           .resize(desiredRows, 34); // Size dynamically so QUERY array can expand
   
   const sheet = builder.getSheet();
   
@@ -585,19 +585,21 @@ function createMembersTabV2(ss) {
          .addRow(1, 'C', 'Use Data → Filter to filter by type', { italic: true, color: '#666666', fontSize: 10 });
   
   // Simple, bulletproof formula: Show all active members (Converted=TRUE, Cancelled<>TRUE)
-  const membersFormula = `QUERY('Lead Data'!A:AH, "SELECT * WHERE S=TRUE AND X<>TRUE ORDER BY T DESC", 1)`;
+  const membersFormula = FormulaBuilder.activeMembersFilter();
   
-  builder.addFormula(2, 'A', membersFormula);
+  builder.addFormula(2, 'A', membersFormula, { note: 'Auto-populated from Lead Data (Converted=TRUE, Cancelled<>TRUE). Header row preserved for downstream references.' });
   
   // SUMMARY moved to columns K-L to avoid blocking QUERY array expansion
   builder.addRow(1, 'K', 'SUMMARY', { bold: true, background: '#f3f3f3' })
          .addRow(2, 'K', 'Total Members:', { bold: true })
-         .addFormula(2, 'L', 'COUNTA(A3:A)-1', { format: '0', bold: true })
+         .addFormula(2, 'L', 'COUNTA(A3:A)', { format: '0', bold: true })
          .addRow(3, 'K', 'Active MRR:', { bold: true })
          .addFormula(3, 'L', 'SUM(V3:V)', { format: '$#,##0', bold: true });
   
   sheet.getRange('K1:L3').setBackground('#f9f9f9');
   
+  sheet.getRange('L3').setNumberFormat('$#,##0');
+
   builder.setColumnWidths({ '1': 120, '2-34': 100 })
          .setFrozen({ rows: 2, columns: 4 })
          .build();
@@ -1308,9 +1310,9 @@ function createLTVAnalysisTabV2(ss) {
   builder
     .addHeader('💰 LIFETIME VALUE (LTV) ANALYSIS', 16)
     .addRow(3, 'A', '📊 LTV by Source (All-Time Data)', { bold: true, fontSize: 14 })
-    .addFormula(4, 'A', "QUERY('_LTV Calculations'!N2:U11, \"SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC\", 1)")
+    .addFormula(4, 'A', "QUERY('_LTV Calculations'!N2:U400, \"SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC\", 1)")
     .addRow(17, 'A', '📦 LTV by Package Type (All-Time Data)', { bold: true, fontSize: 14 })
-    .addFormula(18, 'A', "QUERY('_LTV Calculations'!W2:AD6, \"SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC\", 1)")
+    .addFormula(18, 'A', "QUERY('_LTV Calculations'!W2:AD400, \"SELECT * WHERE Col1 IS NOT NULL ORDER BY Col7 DESC\", 1)")
     .addRow(30, 'A', '📉 Monthly Churn Rate (Last 24 Months)', { bold: true, fontSize: 14 })
     .addFormula(31, 'A', "QUERY('_LTV Calculations'!A15:D39, \"SELECT * WHERE Col1 IS NOT NULL ORDER BY Col1 DESC\", 1)")
     .addRow(30, 'F', '📅 Cohort Analysis - Monthly (Last 24 Months)', { bold: true, fontSize: 14 })
@@ -1369,105 +1371,151 @@ function createLTVCalculationsTabV2(ss) {
   const builder = new TabBuilder(ss, '_LTV Calculations');
   
   builder.create()
-         .resize(50, 30); // 50 rows, 30 columns (A-AD for all LTV tables)
+         .resize(400, 30); // 400 rows, 30 columns (A-AD for all LTV tables)
+
+  const sheet = builder.getSheet();
   
   const headers1 = [['Source', 'Member ID', 'Name', 'Join Date', 'Package Type', 'MRR', 'Status', 'Cancel Date', 'Lifespan (months)', 'Actual LTV', 'Join Month', 'Join Quarter']];
   
-  const combinedFormula = `LET(importRows,FILTER('Import Members'!A4:L,'Import Members'!A4:A<>""),leadRows,FILTER('Lead Data'!A2:AH,'Lead Data'!T2:T<>""),importCount,ROWS(importRows),leadCount,ROWS(leadRows),importBlock,IF(importCount=0,{},MAKEARRAY(importCount,12,LAMBDA(r,c,CHOOSE(c,"Imported",INDEX(importRows,r,1),INDEX(importRows,r,2)&" "&INDEX(importRows,r,3),INDEX(importRows,r,4),INDEX(importRows,r,5),INDEX(importRows,r,6),INDEX(importRows,r,7),INDEX(importRows,r,8),INDEX(importRows,r,11),INDEX(importRows,r,12),INDEX(importRows,r,4),INDEX(importRows,r,4))))),leadBlock,IF(leadCount=0,{},MAKEARRAY(leadCount,12,LAMBDA(r,c,LET(joinDate,INDEX(leadRows,r,20),cancelled,INDEX(leadRows,r,24),cancelDate,INDEX(leadRows,r,25),status,IF(cancelled,"Cancelled","Active"),lifespan,IF(joinDate="","",IF(cancelled,IF(cancelDate="","",DATEDIF(joinDate,cancelDate,"M")),DATEDIF(joinDate,TODAY(),"M"))),mrr,INDEX(leadRows,r,22),ltv,IF(OR(mrr="",lifespan=""),"",mrr*lifespan),CHOOSE(c,INDEX(leadRows,r,8),INDEX(leadRows,r,1),INDEX(leadRows,r,3)&" "&INDEX(leadRows,r,4),joinDate,INDEX(leadRows,r,21),mrr,status,cancelDate,lifespan,ltv,INDEX(leadRows,r,20),INDEX(leadRows,r,20))))),IF(importCount+leadCount=0,{""},IF(importCount=0,leadBlock,IF(leadCount=0,importBlock,VSTACK(importBlock,leadBlock)))))`;
+  const combinedFormula = `LET(
+    blankRow, MAKEARRAY(1,12,LAMBDA(r,c,"")),
+    importData, IFERROR(
+      FILTER({
+        IF(LEN('Import Members'!A4:A),"Imported",""),
+        'Import Members'!A4:A,
+        TRIM('Import Members'!B4:B&" "&'Import Members'!C4:C),
+        'Import Members'!D4:D,
+        'Import Members'!E4:E,
+        'Import Members'!F4:F,
+        'Import Members'!G4:G,
+        'Import Members'!H4:H,
+        'Import Members'!K4:K,
+        'Import Members'!L4:L,
+        IF('Import Members'!D4:D="","",DATE(YEAR('Import Members'!D4:D),MONTH('Import Members'!D4:D),1)),
+        IF('Import Members'!D4:D="","",DATE(YEAR('Import Members'!D4:D),1+3*INT((MONTH('Import Members'!D4:D)-1)/3),1))
+      }, LEN('Import Members'!A4:A)),
+      blankRow
+    ),
+    leadData, IFERROR(
+      FILTER({
+        'Lead Data'!H2:H,
+        'Lead Data'!A2:A,
+        TRIM('Lead Data'!C2:C&" "&'Lead Data'!D2:D),
+        'Lead Data'!T2:T,
+        'Lead Data'!U2:U,
+        'Lead Data'!V2:V,
+        IF('Lead Data'!X2:X,"Cancelled","Active"),
+        'Lead Data'!Y2:Y,
+        IF('Lead Data'!T2:T="","",IF('Lead Data'!X2:X,IF('Lead Data'!Y2:Y="","",DATEDIF('Lead Data'!T2:T,'Lead Data'!Y2:Y,"M")),DATEDIF('Lead Data'!T2:T,TODAY(),"M"))),
+        IF((('Lead Data'!V2:V="")+('Lead Data'!T2:T=""))>0,"",'Lead Data'!V2:V*IF('Lead Data'!X2:X,IF('Lead Data'!Y2:Y="",0,DATEDIF('Lead Data'!T2:T,'Lead Data'!Y2:Y,"M")),DATEDIF('Lead Data'!T2:T,TODAY(),"M"))),
+        IF('Lead Data'!T2:T="","",DATE(YEAR('Lead Data'!T2:T),MONTH('Lead Data'!T2:T),1)),
+        IF('Lead Data'!T2:T="","",DATE(YEAR('Lead Data'!T2:T),1+3*INT((MONTH('Lead Data'!T2:T)-1)/3),1))
+      }, 'Lead Data'!S2:S=TRUE),
+      blankRow
+    ),
+    combined, VSTACK(importData, leadData),
+    IFERROR(FILTER(combined, LEN(INDEX(combined,,2))>0), blankRow)
+  )`;
+
+  // ═══════════════════════════════════════════════════════════════
+  // 📊 Combined Member Dataset (_LTV Calculations!A3)
+  // ═══════════════════════════════════════════════════════════════
+  // Purpose: Builds a unified member fact table from Lead Data + Import Members
+  // Dependencies: Lead Data (columns A, C:D, H, S, T, U, V, X, Y), Import Members (A-H, K:L)
+  // Used by: LTV by Source/Package summaries, LTV Analysis tab queries
+  // Impact: Breaks dashboard/LTV analytics if the spill range errors or columns shift
+  // Example output: Paid Search | LEAD-1000 | Jordan Smith | 2025-07-12 | PT | 149 | Active | | 8 | 1192 | 2025-07-01 | 2025-07-01
+  // ═══════════════════════════════════════════════════════════════
   
   builder
     .addRow(1, 'A', 'Combined Member List', { bold: true })
     .addTable(2, 'A', headers1, { headerRow: true })
-    .addFormula(3, 'A', combinedFormula, { note: 'Combines Import Members + Converted members from Lead Data' });
-  
-  const settingsSheet = ss.getSheetByName('Settings & Budget');
-  const sources = settingsSheet ? settingsSheet.getRange('A14:A24').getValues().flat().filter(s => s !== '') : DefaultLists.SOURCES;
+    .addFormula(3, 'A', combinedFormula, { note: 'Unified dataset spill (row 3+) combining Import Members + converted Lead Data with lifespan/LTV pre-calculated.' });
+
+  sheet.getRange('A3:A400').setNumberFormat('@');
+  sheet.getRange('B3:B400').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('D3:D400').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('H3:H400').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('F3:F400').setNumberFormat('$#,##0.00');
+  sheet.getRange('J3:J400').setNumberFormat('$#,##0.00');
+  sheet.getRange('I3:I400').setNumberFormat('0.0');
   
   builder
     .addRow(1, 'N', 'LTV by Source (All-Time)', { bold: true })
     .addTable(2, 'N', [['Source', 'Total Members', 'Active', 'Cancelled', 'Avg Lifespan', 'Avg MRR', 'Avg LTV', 'Retention Rate %']], { headerRow: true });
-  
-  sources.forEach((source, idx) => {
-    const row = idx + 3;
-    builder
-      .addRow(row, 'N', source, {})
-      .addFormula(row, 'O', `COUNTIF(A:A, "${source}")`)
-      .addFormula(row, 'P', `COUNTIFS(A:A, "${source}", G:G, "Active")`)
-      .addFormula(row, 'Q', `COUNTIFS(A:A, "${source}", G:G, "Cancelled")`)
-      .addFormula(row, 'R', `IFERROR(AVERAGEIF(A:A, "${source}", I:I), 0)`, { format: '0.0' })
-      .addFormula(row, 'S', `IFERROR(AVERAGEIF(A:A, "${source}", F:F), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'T', `IFERROR(AVERAGEIF(A:A, "${source}", J:J), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'U', `IFERROR(P${row}/(O${row}+0.0001), 0)`, { format: '0.0%' });
-  });
-  
-  const packages = DefaultLists.MEMBERSHIP_TYPES;
-  
+
+  const ltvBySourceFormula = `=ARRAYFORMULA(IFNA(LET(srcList, SORT(UNIQUE(FILTER($A$3:$A,$A$3:$A<>""))), MAP(srcList, LAMBDA(src, LET(total, COUNTIF($A$3:$A, src), active, COUNTIFS($A$3:$A, src, $G$3:$G, "Active"), cancelled, COUNTIFS($A$3:$A, src, $G$3:$G, "Cancelled"), avgLife, IFERROR(AVERAGEIF($A$3:$A, src, $I$3:$I), 0), avgMRR, IFERROR(AVERAGEIF($A$3:$A, src, $F$3:$F), 0), avgLTV, IFERROR(AVERAGEIF($A$3:$A, src, $J$3:$J), 0), retention, IF(total=0, 0, active/(total+0.0001)), {src, total, active, cancelled, avgLife, avgMRR, avgLTV, retention} ))), ""))`;
+
+  sheet.getRange('N3').setFormula(ltvBySourceFormula);
+  sheet.getRange('O3:Q400').setNumberFormat('0');
+  sheet.getRange('R3:R400').setNumberFormat('0.0');
+  sheet.getRange('S3:S400').setNumberFormat('$#,##0');
+  sheet.getRange('T3:T400').setNumberFormat('$#,##0');
+  sheet.getRange('U3:U400').setNumberFormat('0.0%');
+
   builder
     .addRow(1, 'W', 'LTV by Package (All-Time)', { bold: true })
     .addTable(2, 'W', [['Package', 'Total Members', 'Active', 'Cancelled', 'Avg Lifespan', 'Avg MRR', 'Avg LTV', 'Actual Churn %']], { headerRow: true });
-  
-  packages.forEach((pkg, idx) => {
-    const row = idx + 3;
-    builder
-      .addRow(row, 'W', pkg, {})
-      .addFormula(row, 'X', `COUNTIF(E:E, "${pkg}")`)
-      .addFormula(row, 'Y', `COUNTIFS(E:E, "${pkg}", G:G, "Active")`)
-      .addFormula(row, 'Z', `COUNTIFS(E:E, "${pkg}", G:G, "Cancelled")`)
-      .addFormula(row, 'AA', `IFERROR(AVERAGEIF(E:E, "${pkg}", I:I), 0)`, { format: '0.0' })
-      .addFormula(row, 'AB', `IFERROR(AVERAGEIF(E:E, "${pkg}", F:F), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'AC', `IFERROR(AVERAGEIF(E:E, "${pkg}", J:J), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'AD', `IF(X${row}=0,"No Data",IFERROR(IF(AA${row}=0,"No Data",1/AA${row}), 0))`, { format: '0.0%' });
-  });
+
+  const ltvByPackageFormula = `=ARRAYFORMULA(IFNA(LET(pkgList, SORT(UNIQUE(FILTER($E$3:$E,$E$3:$E<>""))), MAP(pkgList, LAMBDA(pkg, LET(total, COUNTIF($E$3:$E, pkg), active, COUNTIFS($E$3:$E, pkg, $G$3:$G, "Active"), cancelled, COUNTIFS($E$3:$E, pkg, $G$3:$G, "Cancelled"), avgLife, IFERROR(AVERAGEIF($E$3:$E, pkg, $I$3:$I), 0), avgMRR, IFERROR(AVERAGEIF($E$3:$E, pkg, $F$3:$F), 0), avgLTV, IFERROR(AVERAGEIF($E$3:$E, pkg, $J$3:$J), 0), churn, IF(total=0, 0, cancelled/(total+0.0001)), {pkg, total, active, cancelled, avgLife, avgMRR, avgLTV, churn} ))), ""))`;
+
+  sheet.getRange('W3').setFormula(ltvByPackageFormula);
+  sheet.getRange('X3:Z400').setNumberFormat('0');
+  sheet.getRange('AA3:AA400').setNumberFormat('0.0');
+  sheet.getRange('AB3:AB400').setNumberFormat('$#,##0');
+  sheet.getRange('AC3:AC400').setNumberFormat('$#,##0');
+  sheet.getRange('AD3:AD400').setNumberFormat('0.0%');
   
   builder
     .addRow(14, 'A', 'Monthly Churn Rate (Last 24 Months)', { bold: true })
     .addTable(15, 'A', [['Month', 'Active Start', 'Cancellations', 'Churn Rate %']], { headerRow: true });
-  
-  for (let i = 23; i >= 0; i--) {
-    const row = 39 - i;
-    builder
-      .addFormula(row, 'A', `DATE(YEAR(TODAY()),MONTH(TODAY())-${i},1)`, { format: 'mmm yyyy' })
-      .addFormula(row, 'B', `COUNTIFS(D:D, "<"&A${row}, G:G, "Active") + COUNTIFS(H:H, ">="&A${row}, H:H, "<"&EOMONTH(A${row},0))`)
-      .addFormula(row, 'C', `COUNTIFS(H:H, ">="&A${row}, H:H, "<"&EOMONTH(A${row},0))`)
-      .addFormula(row, 'D', `IFERROR(C${row}/B${row}, 0)`, { format: '0.0%' });
-  }
+
+  sheet.getRange('A16').setFormula(`=ARRAYFORMULA(EOMONTH(DATE(YEAR(TODAY()), MONTH(TODAY())-SEQUENCE(24,1,0,1), 1),0))`);
+  sheet.getRange('B16').setFormula(`=ARRAYFORMULA(IF(A16:A39="",,MAP(A16:A39,LAMBDA(monthStart, COUNTIFS($D$3:$D,"<"&monthStart,$G$3:$G,"Active") + COUNTIFS($H$3:$H,">="&monthStart,$H$3:$H,"<"&EOMONTH(monthStart,0)) )))))`);
+  sheet.getRange('C16').setFormula(`=ARRAYFORMULA(IF(A16:A39="",,MAP(A16:A39,LAMBDA(monthStart, COUNTIFS($H$3:$H,">="&monthStart,$H$3:$H,"<"&EOMONTH(monthStart,0)) )))))`);
+  sheet.getRange('D16').setFormula(`=ARRAYFORMULA(IF(A16:A39="",,IF(B16:B39=0,0,C16:C39/B16:B39)))`);
+  sheet.getRange('A16:A39').setNumberFormat('mmm yyyy');
+  sheet.getRange('B16:C39').setNumberFormat('0');
+  sheet.getRange('D16:D39').setNumberFormat('0.0%');
   
   builder
     .addRow(14, 'F', 'Cohort Analysis - Monthly (Last 24 Months)', { bold: true })
     .addTable(15, 'F', [['Join Month', 'Members', 'Still Active', 'Avg Lifespan', 'Avg LTV', 'Retention %']], { headerRow: true });
-  
-  for (let i = 23; i >= 0; i--) {
-    const row = 39 - i;
-    builder
-      .addFormula(row, 'F', `DATE(YEAR(TODAY()),MONTH(TODAY())-${i},1)`, { format: 'mmm yyyy' })
-      .addFormula(row, 'G', `COUNTIFS(K:K, F${row})`)
-      .addFormula(row, 'H', `COUNTIFS(K:K, F${row}, G:G, "Active")`)
-      .addFormula(row, 'I', `IFERROR(AVERAGEIFS(I:I, K:K, F${row}), 0)`, { format: '0.0' })
-      .addFormula(row, 'J', `IFERROR(AVERAGEIFS(J:J, K:K, F${row}), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'K', `IFERROR(H${row}/G${row}, 0)`, { format: '0.0%' });
-  }
+
+  sheet.getRange('F16').setFormula(`=ARRAYFORMULA(A16:A39)`);
+  sheet.getRange('G16').setFormula(`=ARRAYFORMULA(IF(F16:F39="",,MAP(F16:F39,LAMBDA(monthKey, COUNTIFS($K$3:$K, monthKey)))))`);
+  sheet.getRange('H16').setFormula(`=ARRAYFORMULA(IF(F16:F39="",,MAP(F16:F39,LAMBDA(monthKey, COUNTIFS($K$3:$K, monthKey, $G$3:$G, "Active")))))`);
+  sheet.getRange('I16').setFormula(`=ARRAYFORMULA(IF(F16:F39="",,MAP(F16:F39,LAMBDA(monthKey, IFERROR(AVERAGEIF($K$3:$K, monthKey, $I$3:$I),0)))))`);
+  sheet.getRange('J16').setFormula(`=ARRAYFORMULA(IF(F16:F39="",,MAP(F16:F39,LAMBDA(monthKey, IFERROR(AVERAGEIF($K$3:$K, monthKey, $J$3:$J),0)))))`);
+  sheet.getRange('K16').setFormula(`=ARRAYFORMULA(IF(F16:F39="",,IF(G16:G39=0,0,H16:H39/G16:G39)))`);
+  sheet.getRange('F16:F39').setNumberFormat('mmm yyyy');
+  sheet.getRange('G16:H39').setNumberFormat('0');
+  sheet.getRange('I16:I39').setNumberFormat('0.0');
+  sheet.getRange('J16:J39').setNumberFormat('$#,##0');
+  sheet.getRange('K16:K39').setNumberFormat('0.0%');
   
   builder
     .addRow(14, 'M', 'Cohort Analysis - Quarterly (Last 12 Quarters)', { bold: true })
     .addTable(15, 'M', [['Join Quarter', 'Members', 'Still Active', 'Avg Lifespan', 'Avg LTV', 'Retention %']], { headerRow: true });
-  
-  for (let i = 11; i >= 0; i--) {
-    const row = 27 - i;
-    builder
-      .addFormula(row, 'M', `DATE(YEAR(TODAY()), ROUNDDOWN((MONTH(TODAY())-1)/3,0)*3+1-${i*3}, 1)`, { format: '"Q"Q YYYY' })
-      .addFormula(row, 'N', `COUNTIFS(L:L, ">="&M${row}, L:L, "<"&EDATE(M${row}, 3))`)
-      .addFormula(row, 'O', `COUNTIFS(L:L, ">="&M${row}, L:L, "<"&EDATE(M${row}, 3), G:G, "Active")`)
-      .addFormula(row, 'P', `IFERROR(AVERAGEIFS(I:I, L:L, ">="&M${row}, L:L, "<"&EDATE(M${row}, 3)), 0)`, { format: '0.0' })
-      .addFormula(row, 'Q', `IFERROR(AVERAGEIFS(J:J, L:L, ">="&M${row}, L:L, "<"&EDATE(M${row}, 3)), 0)`, { format: '$#,##0' })
-      .addFormula(row, 'R', `IFERROR(O${row}/N${row}, 0)`, { format: '0.0%' });
-  }
+
+  sheet.getRange('M16').setFormula(`=ARRAYFORMULA(EDATE(DATE(YEAR(TODAY()),1+3*INT((MONTH(TODAY())-1)/3),1),-3*SEQUENCE(12,1,0,1)))`);
+  sheet.getRange('N16').setFormula(`=ARRAYFORMULA(IF(M16:M27="",,MAP(M16:M27,LAMBDA(qStart, COUNTIFS($L$3:$L,">="&qStart,$L$3:$L,"<"&EDATE(qStart,3))))))`);
+  sheet.getRange('O16').setFormula(`=ARRAYFORMULA(IF(M16:M27="",,MAP(M16:M27,LAMBDA(qStart, COUNTIFS($L$3:$L,">="&qStart,$L$3:$L,"<"&EDATE(qStart,3),$G$3:$G,"Active"))))))`);
+  sheet.getRange('P16').setFormula(`=ARRAYFORMULA(IF(M16:M27="",,MAP(M16:M27,LAMBDA(qStart, IFERROR(AVERAGEIFS($I$3:$I,$L$3:$L,">="&qStart,$L$3:$L,"<"&EDATE(qStart,3)),0)))))`);
+  sheet.getRange('Q16').setFormula(`=ARRAYFORMULA(IF(M16:M27="",,MAP(M16:M27,LAMBDA(qStart, IFERROR(AVERAGEIFS($J$3:$J,$L$3:$L,">="&qStart,$L$3:$L,"<"&EDATE(qStart,3)),0)))))`);
+  sheet.getRange('R16').setFormula(`=ARRAYFORMULA(IF(M16:M27="",,IF(N16:N27=0,0,O16:O27/N16:N27)))`);
+  sheet.getRange('M16:M27').setNumberFormat('"Q"Q YYYY');
+  sheet.getRange('N16:O27').setNumberFormat('0');
+  sheet.getRange('P16:P27').setNumberFormat('0.0');
+  sheet.getRange('Q16:Q27').setNumberFormat('$#,##0');
+  sheet.getRange('R16:R27').setNumberFormat('0.0%');
   
   builder
     .setColumnWidths({ '1-30': 120 })
     .hide()
     .build();
   
-  Logger.log('✅ _LTV Calculations tab created (refactored v2) - 6 sections (50 rows × 30 cols)');
+  Logger.log('✅ _LTV Calculations tab created (refactored v2) - dynamic arrays (400 rows × 30 cols)');
   
   return builder.getSheet();
 }
